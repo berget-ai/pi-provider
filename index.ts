@@ -127,10 +127,13 @@ function startCallbackServer(expectedState: string): Promise<{
   server: http.Server;
   waitForCode: () => Promise<CallbackResult | null>;
   cancelWait: () => void;
+  close: () => void;
 }> {
   return new Promise((resolve, reject) => {
     let settleWait: ((value: CallbackResult | null) => void) | null = null;
     let settled = false;
+
+    const activeSockets = new Set<http.Socket>();
 
     const waitForCodePromise = new Promise<CallbackResult | null>(resolveWait => {
       settleWait = value => {
@@ -144,7 +147,7 @@ function startCallbackServer(expectedState: string): Promise<{
       try {
         const parsed = new URL(req.url || "/", "http://localhost");
         if (parsed.pathname !== CALLBACK_PATH) {
-          res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(404, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
           res.end(oauthResponseHtml(false, "Not found."));
           return;
         }
@@ -153,31 +156,36 @@ function startCallbackServer(expectedState: string): Promise<{
         const error = parsed.searchParams.get("error");
 
         if (error) {
-          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
           res.end(oauthResponseHtml(false, error));
           settleWait?.(null);
           return;
         }
         if (!code || !state) {
-          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
           res.end(oauthResponseHtml(false, "Missing authorization code."));
           settleWait?.(null);
           return;
         }
         if (state !== expectedState) {
-          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
           res.end(oauthResponseHtml(false, "State mismatch. Please try again."));
           settleWait?.(null);
           return;
         }
 
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
         res.end(oauthResponseHtml(true, "You can close this window and return to Pi."));
         settleWait?.({ code, state });
       } catch {
-        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8", Connection: "close" });
         res.end("Internal error");
       }
+    });
+
+    server.on("connection", (socket: http.Socket) => {
+      activeSockets.add(socket);
+      socket.once("close", () => activeSockets.delete(socket));
     });
 
     server.on("error", (err: NodeJS.ErrnoException) => {
@@ -203,6 +211,13 @@ function startCallbackServer(expectedState: string): Promise<{
           return waitForCodePromise.finally(() => clearTimeout(timeout));
         },
         cancelWait: () => settleWait?.(null),
+        close: () => {
+          for (const socket of activeSockets) {
+            socket.destroy();
+          }
+          activeSockets.clear();
+          server.close();
+        },
       });
     });
   });
@@ -283,7 +298,7 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
   } catch (err) {
     if (err instanceof Error && err.message.includes("EADDRINUSE")) throw err;
   } finally {
-    callbackServer?.server.close();
+    callbackServer?.close();
   }
 
   if (!code) {
