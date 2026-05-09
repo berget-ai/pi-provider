@@ -6,8 +6,18 @@
   "publishConfig": {
     "access": "public"
   },
-  "keywords": ["pi", "pi-package", "pi-extension", "pi-provider"],
-  "files": ["index.ts", "package.json", "README.md", "LICENSE"],
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "pi-provider"
+  ],
+  "files": [
+    "index.ts",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/berget-ai/pi-provider-berget.git"
@@ -19,7 +29,14 @@
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ]
   },
   "pi": {
     "extensions": [
@@ -35,6 +52,8 @@
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.3",
     "prettier": "^3.8.3",
     "vitest": "^3.0.0"
   },
