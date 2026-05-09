@@ -1,5 +1,5 @@
 {
-  "name": "@bergetai/pi-provider-berget",
+  "name": "@bergetai/pi-provider",
   "version": "0.1.9",
   "license": "MIT",
   "type": "module",
@@ -20,9 +20,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/berget-ai/pi-provider-berget.git"
+    "url": "git+https://github.com/berget-ai/pi-provider.git"
   },
-  "bugs": "https://github.com/berget-ai/pi-provider-berget/issues",
+  "bugs": "https://github.com/berget-ai/pi-provider/issues",
   "homepage": "https://berget.ai",
   "scripts": {
     "test": "vitest run",

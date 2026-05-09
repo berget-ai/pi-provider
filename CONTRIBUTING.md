@@ -1,4 +1,4 @@
-# Contributing to @berget-ai/pi-provider-berget
+# Contributing to @bergetai/pi-provider
 
 Thank you for your interest in contributing! This document covers development setup, testing, and how the extension works.
 
@@ -7,8 +7,8 @@ Thank you for your interest in contributing! This document covers development se
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/berget-ai/pi-provider-berget.git
-cd pi-provider-berget
+git clone https://github.com/berget-ai/pi-provider.git
+cd pi-provider
 npm install
 ```
 
@@ -26,7 +26,7 @@ For quick manual testing, load the extension directly without installing it:
 pi -e ./index.ts
 ```
 
-> **Tip:** For iterative development, place the extension in `~/.pi/agent/extensions/pi-provider-berget` or `.pi/extensions/pi-provider-berget` and use `/reload` in Pi to pick up changes after each edit.
+> **Tip:** For iterative development, place the extension in `~/.pi/agent/extensions/pi-provider` or `.pi/extensions/pi-provider` and use `/reload` in Pi to pick up changes after each edit.
 
 ## Architecture
 
