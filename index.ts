@@ -1,4 +1,5 @@
 import * as http from "node:http";
+import type { Socket } from "node:net";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 
@@ -133,7 +134,7 @@ function startCallbackServer(expectedState: string): Promise<{
     let settleWait: ((value: CallbackResult | null) => void) | null = null;
     let settled = false;
 
-    const activeSockets = new Set<http.Socket>();
+    const activeSockets = new Set<Socket>();
 
     const waitForCodePromise = new Promise<CallbackResult | null>(resolveWait => {
       settleWait = value => {
@@ -183,7 +184,7 @@ function startCallbackServer(expectedState: string): Promise<{
       }
     });
 
-    server.on("connection", (socket: http.Socket) => {
+    server.on("connection", (socket: Socket) => {
       activeSockets.add(socket);
       socket.once("close", () => activeSockets.delete(socket));
     });
