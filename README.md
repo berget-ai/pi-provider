@@ -2,12 +2,6 @@
 
 Run [Berget AI](https://berget.ai) models inside [Pi](https://pi.dev).
 
-```bash
-pi install npm:@bergetai/pi-provider-berget
-```
-
-Select a model with `/model` or cycle with `Ctrl+P`.
-
 ## Prerequisites
 
 - [Pi](https://pi.dev) v0.50.0 or later
@@ -16,7 +10,7 @@ Select a model with `/model` or cycle with `Ctrl+P`.
 ## Installation
 
 ```bash
-pi install npm:@bergetai/pi-provider-berget
+pi install npm:@bergetai/pi-provider
 ```
 
 Restart Pi or run `/reload` to load the extension.
