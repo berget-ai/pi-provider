@@ -1,29 +1,12 @@
-# @bergetai/pi-provider-berget
+# Pi provider for Berget AI
 
-Run Berget AI models inside Pi. Your inference data stays on Swedish infrastructure, within EU jurisdiction
+Run Berget AI models inside [Pi](https://pi.dev).
 
 ```bash
 pi install npm:@bergetai/pi-provider-berget
 ```
 
-```bash
-export BERGET_API_KEY=your-api-key   # or: /login berget
-```
-
-Select a model with `/model berget/<model-id>` or cycle with `Ctrl+P`.
-
-## Who this is for
-
-- You have a Berget AI account and want to use those models inside Pi
-- You need inference data to remain in Swedish jurisdiction, not subject to the CLOUD Act or FISA 702
-- You want Berget AI's model catalogue to appear in Pi automatically when new models are added
-
-## Features
-
-- **Automatic model discovery** — new models appear in Pi when Berget AI adds them. No manual tracking of model IDs
-- **Two ways to authenticate** — API key for scripts and pay-as-you-go, or browser OAuth for Berget AI subscriptions
-- **Cost tracking** — per-model pricing is pulled from the Berget AI API, so you know what each request costs
-- **OpenAI-compatible streaming** — uses the same endpoint shape as OpenAI, so the switch is a base URL and an API key
+Select a model with `/model` or cycle with `Ctrl+P`.
 
 ## Prerequisites
 
@@ -32,28 +15,8 @@ Select a model with `/model berget/<model-id>` or cycle with `Ctrl+P`.
 
 ## Installation
 
-**Via npm (recommended):**
-
 ```bash
 pi install npm:@bergetai/pi-provider-berget
-```
-
-**Via git (for development or air-gapped installs):**
-
-Globally:
-
-```bash
-git clone https://github.com/berget-ai/pi-provider-berget.git ~/.pi/agent/extensions/pi-provider-berget
-cd ~/.pi/agent/extensions/pi-provider-berget
-npm install
-```
-
-Project-local:
-
-```bash
-git clone https://github.com/berget-ai/pi-provider-berget.git .pi/extensions/pi-provider-berget
-cd .pi/extensions/pi-provider-berget
-npm install
 ```
 
 Restart Pi or run `/reload` to load the extension.
@@ -62,7 +25,7 @@ Restart Pi or run `/reload` to load the extension.
 
 This provider supports two authentication methods. API key authentication takes precedence when both are configured.
 
-### API key (pay-as-you-go or programmatic)
+### Using an API key
 
 Set your API key using one of the following methods.
 
@@ -96,36 +59,22 @@ export BERGET_API_KEY=your-api-key
 }
 ```
 
-> **Note:** Custom providers with OAuth configuration do not appear in `/login` under "Use an API key" for interactive entry. This is a known Pi limitation that affects all providers with dual authentication. Use the methods above instead.
+### Using a Berget Code subscription
 
-### OAuth (Berget AI subscription)
-
-For subscription-based accounts, authenticate interactively through your browser:
+If you have a Berget Code subscription, authenticate interactively through your browser:
 
 ```
 /login
 ```
 
-Select **"Use a subscription"** and then **"Berget AI"** to start the OAuth flow:
-
-1. Pi opens the Berget AI login page in your browser
-2. You authenticate with your Berget AI credentials
-3. Berget AI redirects back to a local callback server at `http://localhost:8787`
-4. Pi captures the authorization code and exchanges it for tokens
-5. Tokens are persisted in `~/.pi/agent/auth.json` and refreshed automatically
+Select **"Use a subscription"** and then **"Berget AI"**.
 
 ## Usage
 
 After installation, Berget AI models are available in Pi. Select one with:
 
 ```
-/model berget/<model-id>
-```
-
-For example:
-
-```
-/model berget/meta-llama/Llama-3.3-70B-Instruct
+/model
 ```
 
 Or cycle through models with `Ctrl+P`. Models are prefixed with `berget/`.
