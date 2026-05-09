@@ -18,30 +18,30 @@ const OAUTH_TIMEOUT_MS = () => parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || "
 // Hugging Face model cards are the source of truth for these values.
 
 const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
-	"openai/gpt-oss-120b": {
-		reasoning: true,
-	},
-	"mistralai/Mistral-Medium-3.5-128B": {
-		input: ["text", "image"],
-		reasoning: true,
-	},
-	"mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
-		input: ["text", "image"],
-		reasoning: false,
-	},
-	"zai-org/GLM-4.7-FP8": {
-		reasoning: true,
-	},
-	"google/gemma-4-31B-it": {
-		input: ["text", "image"],
-		reasoning: true,
-	},
-	"meta-llama/Llama-3.3-70B-Instruct": {
-		reasoning: false,
-	},
-	"meta-llama/Llama-3.1-8B-Instruct": {
-		reasoning: false,
-	},
+  "openai/gpt-oss-120b": {
+    reasoning: true,
+  },
+  "mistralai/Mistral-Medium-3.5-128B": {
+    input: ["text", "image"],
+    reasoning: true,
+  },
+  "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
+    input: ["text", "image"],
+    reasoning: false,
+  },
+  "zai-org/GLM-4.7-FP8": {
+    reasoning: true,
+  },
+  "google/gemma-4-31B-it": {
+    input: ["text", "image"],
+    reasoning: true,
+  },
+  "meta-llama/Llama-3.3-70B-Instruct": {
+    reasoning: false,
+  },
+  "meta-llama/Llama-3.1-8B-Instruct": {
+    reasoning: false,
+  },
 };
 
 // === URL Helpers ===

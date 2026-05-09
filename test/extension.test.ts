@@ -103,7 +103,9 @@ describe("Extension Entry Point", () => {
     };
 
     const { default: extension } = await import("../index");
-    await expect(extension((mockPi as unknown) as ExtensionAPI)).rejects.toThrow("Failed to fetch models");
+    await expect(extension(mockPi as unknown as ExtensionAPI)).rejects.toThrow(
+      "Failed to fetch models"
+    );
     expect(registerCalled).toBe(false);
   });
 
