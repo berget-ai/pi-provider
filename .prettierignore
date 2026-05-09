@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+*.lock
+package-lock.json
+.lockfile
+.husky
+coverage
+.nyc_output
+test-results
+playwright-report
