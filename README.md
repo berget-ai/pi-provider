@@ -1,6 +1,6 @@
-# Pi provider for Berget AI
+# Pi extension for Berget AI
 
-Run Berget AI models inside [Pi](https://pi.dev).
+Run [Berget AI](https://berget.ai) models inside [Pi](https://pi.dev).
 
 ```bash
 pi install npm:@bergetai/pi-provider-berget
@@ -10,7 +10,7 @@ Select a model with `/model` or cycle with `Ctrl+P`.
 
 ## Prerequisites
 
-- [Pi](https://pi.dev) v0.70.6 or later
+- [Pi](https://pi.dev) v0.50.0 or later
 - A [Berget AI](https://berget.ai) account
 
 ## Installation
@@ -59,9 +59,9 @@ export BERGET_API_KEY=your-api-key
 }
 ```
 
-### Using a Berget Code subscription
+### Using a Berget Code plan
 
-If you have a Berget Code subscription, authenticate interactively through your browser:
+If you have a Berget Code plan, authenticate interactively through your browser:
 
 ```
 /login
@@ -71,7 +71,7 @@ Select **"Use a subscription"** and then **"Berget AI"**.
 
 ## Usage
 
-After installation, Berget AI models are available in Pi. Select one with:
+Once authenticated, Berget AI models are available in Pi. Select one with:
 
 ```
 /model
