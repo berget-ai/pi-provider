@@ -1,48 +1,48 @@
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import type { Socket } from "node:net";
+import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
+import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
+import type { Socket } from 'node:net';
 
-import * as http from "node:http";
+import * as http from 'node:http';
 
 // === Constants ===
 
 const DEFAULT_MAX_TOKENS = 16384;
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 60 * 1000;
-const KEYCLOAK_CLIENT_ID = "berget-code";
+const KEYCLOAK_CLIENT_ID = 'berget-code';
 const CALLBACK_PORT = 8787;
-const CALLBACK_HOST = "127.0.0.1";
-const CALLBACK_PATH = "/callback";
+const CALLBACK_HOST = '127.0.0.1';
+const CALLBACK_PATH = '/callback';
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const OAUTH_TIMEOUT_MS = (): number =>
-  parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || "300000", 10);
+  parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
 
 // === Model Capability Overrides ===
 // Manual overrides for model capabilities not returned by /v1/models/chat.
 // Hugging Face model cards are the source of truth for these values.
 
 const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
-  "google/gemma-4-31B-it": {
-    input: ["text", "image"],
+  'google/gemma-4-31B-it': {
+    input: ['text', 'image'],
     reasoning: true,
   },
-  "meta-llama/Llama-3.1-8B-Instruct": {
+  'meta-llama/Llama-3.1-8B-Instruct': {
     reasoning: false,
   },
-  "meta-llama/Llama-3.3-70B-Instruct": {
+  'meta-llama/Llama-3.3-70B-Instruct': {
     reasoning: false,
   },
-  "mistralai/Mistral-Medium-3.5-128B": {
-    input: ["text", "image"],
+  'mistralai/Mistral-Medium-3.5-128B': {
+    input: ['text', 'image'],
     reasoning: true,
   },
-  "mistralai/Mistral-Small-3.2-24B-Instruct-2506": {
-    input: ["text", "image"],
+  'mistralai/Mistral-Small-3.2-24B-Instruct-2506': {
+    input: ['text', 'image'],
     reasoning: false,
   },
-  "openai/gpt-oss-120b": {
+  'openai/gpt-oss-120b': {
     reasoning: true,
   },
-  "zai-org/GLM-4.7-FP8": {
+  'zai-org/GLM-4.7-FP8': {
     reasoning: true,
   },
 };
@@ -85,10 +85,10 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
   const params = new URLSearchParams({
     client_id: KEYCLOAK_CLIENT_ID,
     code_challenge: challenge,
-    code_challenge_method: "S256",
+    code_challenge_method: 'S256',
     redirect_uri: REDIRECT_URI,
-    response_type: "code",
-    scope: "openid email profile offline_access",
+    response_type: 'code',
+    scope: 'openid email profile offline_access',
     state,
   });
 
@@ -102,7 +102,7 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
 
     callbacks.onAuth({
       instructions:
-        "Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.",
+        'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
       url: authUrl,
     });
 
@@ -112,14 +112,14 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
 
       const manualPromise = callbacks
         .onManualCodeInput()
-        .then(input => {
+        .then((input) => {
           manualInput = input;
-          callbackServer!.cancelWait();
+          if (callbackServer) callbackServer.cancelWait();
           return input;
         })
-        .catch(err => {
+        .catch((err) => {
           manualError = err instanceof Error ? err : new Error(String(err));
-          callbackServer!.cancelWait();
+          if (callbackServer) callbackServer.cancelWait();
         });
 
       const result = await callbackServer.waitForCode();
@@ -140,34 +140,34 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
       if (result?.code) code = result.code;
     }
   } catch (err) {
-    if (err instanceof Error && err.message.includes("EADDRINUSE")) throw err;
+    if (err instanceof Error && err.message.includes('EADDRINUSE')) throw err;
   } finally {
     callbackServer?.close();
   }
 
   if (!code) {
     code = await callbacks.onPrompt({
-      message: "Enter the authorization code from the callback URL",
-      placeholder: "Authorization code",
+      message: 'Enter the authorization code from the callback URL',
+      placeholder: 'Authorization code',
     });
   }
 
   if (!code) {
-    throw new Error("Missing authorization code");
+    throw new Error('Missing authorization code');
   }
 
-  callbacks.onProgress?.("Exchanging authorization code for tokens...");
+  callbacks.onProgress?.('Exchanging authorization code for tokens...');
 
   const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
     body: new URLSearchParams({
       client_id: KEYCLOAK_CLIENT_ID,
       code,
       code_verifier: verifier,
-      grant_type: "authorization_code",
+      grant_type: 'authorization_code',
       redirect_uri: REDIRECT_URI,
     }),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    method: "POST",
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
   });
 
   if (!tokenResponse.ok) {
@@ -201,7 +201,7 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
       output: model.outputPricePerToken * 1e6,
     },
     id: model.id,
-    input: ["text"],
+    input: ['text'],
     maxTokens: DEFAULT_MAX_TOKENS,
     name: model.id,
     reasoning: false,
@@ -217,8 +217,8 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     body: JSON.stringify({
       refresh_token: credentials.refresh,
     }),
-    headers: { "Content-Type": "application/json" },
-    method: "POST",
+    headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
   });
 
   if (!response.ok) {
@@ -245,11 +245,11 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
 
 function base64URLEncode(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  let str = "";
+  let str = '';
   for (const byte of bytes) {
     str += String.fromCharCode(byte);
   }
-  return btoa(str).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
@@ -258,7 +258,7 @@ async function generatePKCE(): Promise<{ challenge: string; verifier: string }> 
   const verifier = base64URLEncode(verifierBytes.buffer as ArrayBuffer);
   const encoder = new TextEncoder();
   const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  const digest = await crypto.subtle.digest('SHA-256', data);
   const challenge = base64URLEncode(digest);
   return { challenge, verifier };
 }
@@ -266,29 +266,29 @@ async function generatePKCE(): Promise<{ challenge: string; verifier: string }> 
 function generateRandomString(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
-  return Array.from(array, b => b.toString(16).padStart(2, "0")).join("");
+  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 // === OAuth ===
 
 function getApiUrl(): string {
-  return process.env.BERGET_API_URL || "https://api.berget.ai";
+  return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
 
 function getAuthUrl(): string {
-  return process.env.BERGET_AUTH_URL || "https://keycloak.berget.ai";
+  return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
 }
 
 function getInferenceUrl(): string {
-  return process.env.BERGET_INFERENCE_URL || "https://api.berget.ai/v1";
+  return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
 }
 
 // === PKCE Helpers ===
 
 function oauthResponseHtml(success: boolean, message: string): string {
-  const color = success ? "#4ade80" : "#f87171";
-  const bg = success ? "rgba(74,222,128,0.3)" : "rgba(248,113,113,0.3)";
-  const title = success ? "Authentication Successful" : "Authentication Failed";
+  const color = success ? '#4ade80' : '#f87171';
+  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
+  const title = success ? 'Authentication Successful' : 'Authentication Failed';
   const icon = success
     ? `<polyline points="20 6 9 17 4 12"/>`
     : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
@@ -298,7 +298,7 @@ function oauthResponseHtml(success: boolean, message: string): string {
 function parseCodeFromInput(input: string): null | string {
   try {
     const parsed = new URL(input);
-    return parsed.searchParams.get("code");
+    return parsed.searchParams.get('code');
   } catch {
     return input.trim() || null;
   }
@@ -316,7 +316,7 @@ function startCallbackServer(expectedState: string): Promise<{
 
     const activeSockets = new Set<Socket>();
 
-    const waitForCodePromise = new Promise<CallbackResult | null>(resolve => {
+    const waitForCodePromise = new Promise<CallbackResult | null>((resolve) => {
       settleWait = (value: CallbackResult | null): void => {
         if (settled) return;
         settled = true;
@@ -326,55 +326,55 @@ function startCallbackServer(expectedState: string): Promise<{
 
     const server = http.createServer((req, res) => {
       try {
-        const parsed = new URL(req.url || "/", "http://localhost");
+        const parsed = new URL(req.url || '/', 'http://localhost');
         if (parsed.pathname !== CALLBACK_PATH) {
-          res.writeHead(404, { Connection: "close", "Content-Type": "text/html; charset=utf-8" });
-          res.end(oauthResponseHtml(false, "Not found."));
+          res.writeHead(404, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(oauthResponseHtml(false, 'Not found.'));
           return;
         }
-        const code = parsed.searchParams.get("code");
-        const state = parsed.searchParams.get("state");
-        const error = parsed.searchParams.get("error");
+        const code = parsed.searchParams.get('code');
+        const state = parsed.searchParams.get('state');
+        const error = parsed.searchParams.get('error');
 
         if (error) {
-          res.writeHead(400, { Connection: "close", "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
           res.end(oauthResponseHtml(false, error));
           settleWait?.(null);
           return;
         }
         if (!code || !state) {
-          res.writeHead(400, { Connection: "close", "Content-Type": "text/html; charset=utf-8" });
-          res.end(oauthResponseHtml(false, "Missing authorization code."));
+          res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(oauthResponseHtml(false, 'Missing authorization code.'));
           settleWait?.(null);
           return;
         }
         if (state !== expectedState) {
-          res.writeHead(400, { Connection: "close", "Content-Type": "text/html; charset=utf-8" });
-          res.end(oauthResponseHtml(false, "State mismatch. Please try again."));
+          res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(oauthResponseHtml(false, 'State mismatch. Please try again.'));
           settleWait?.(null);
           return;
         }
 
-        res.writeHead(200, { Connection: "close", "Content-Type": "text/html; charset=utf-8" });
-        res.end(oauthResponseHtml(true, "You can close this window and return to Pi."));
+        res.writeHead(200, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(oauthResponseHtml(true, 'You can close this window and return to Pi.'));
         settleWait?.({ code, state });
       } catch {
-        res.writeHead(500, { Connection: "close", "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Internal error");
+        res.writeHead(500, { Connection: 'close', 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Internal error');
       }
     });
 
-    server.on("connection", (socket: Socket) => {
+    server.on('connection', (socket: Socket) => {
       activeSockets.add(socket);
-      socket.once("close", () => activeSockets.delete(socket));
+      socket.once('close', () => activeSockets.delete(socket));
     });
 
-    server.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
         reject(
           new Error(
-            `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`
-          )
+            `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`,
+          ),
         );
       } else {
         reject(err);
@@ -409,17 +409,17 @@ function startCallbackServer(expectedState: string): Promise<{
 export default async function (pi: ExtensionAPI): Promise<void> {
   const models = await fetchBergetModels();
 
-  pi.registerProvider("berget", {
-    api: "openai-completions",
-    apiKey: "BERGET_API_KEY",
+  pi.registerProvider('berget', {
+    api: 'openai-completions',
+    apiKey: 'BERGET_API_KEY',
     authHeader: true,
     baseUrl: getInferenceUrl(),
     models,
-    name: "Berget AI",
+    name: 'Berget AI',
     oauth: {
-      getApiKey: cred => cred.access,
+      getApiKey: (cred) => cred.access,
       login: loginBerget,
-      name: "Berget AI",
+      name: 'Berget AI',
       refreshToken: refreshBergetToken,
     },
   });

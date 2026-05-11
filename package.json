@@ -30,6 +30,7 @@
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -59,7 +60,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.0.3",
     "prettier": "^3.8.3",
-    "typescript-eslint": "^8.25.0",
+    "typescript-eslint": "^8.59.3",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
