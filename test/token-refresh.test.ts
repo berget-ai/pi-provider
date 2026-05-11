@@ -2,7 +2,7 @@ import type { OAuthCredentials } from '@earendil-works/pi-ai';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { refreshBergetToken } from '../index';
+import { refreshBergetToken, resolveInputUrl } from '../index';
 
 const EXPIRY_BUFFER_MS = 60 * 1000;
 
@@ -58,8 +58,7 @@ describe('Token Refresh Flow - Berget API', () => {
     let capturedInit: RequestInit | undefined;
     let capturedUrl: string | undefined;
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      capturedUrl =
-        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      capturedUrl = resolveInputUrl(input);
       capturedInit = init;
       return bergetRefreshResponse('new-access', 'new-refresh', 300);
     };
@@ -91,11 +90,7 @@ describe('Token Refresh Flow - Berget API', () => {
   test('full lifecycle: login → access expires → refresh → access expires → refresh again', async () => {
     let callCount = 0;
     globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
-      if (
-        !isBergetRefreshUrl(
-          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
-        )
-      ) {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
         return new Response('Not found', { status: 404 });
       }
       callCount++;
@@ -121,11 +116,7 @@ describe('Token Refresh Flow - Berget API', () => {
     const capturedTokens: string[] = [];
     let callCount = 0;
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      if (
-        !isBergetRefreshUrl(
-          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
-        )
-      ) {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
         return new Response('Not found', { status: 404 });
       }
       callCount++;
@@ -169,11 +160,7 @@ describe('Token Refresh Flow - Berget API', () => {
     const inflightResolvers: Array<(value: unknown) => void> = [];
 
     globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
-      if (
-        !isBergetRefreshUrl(
-          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
-        )
-      ) {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
         return new Response('Not found', { status: 404 });
       }
 
@@ -218,8 +205,7 @@ describe('Token Refresh Flow - Berget API', () => {
     process.env.BERGET_API_URL = 'https://custom-api.example.com';
     let capturedUrl: string | undefined;
     globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
-      capturedUrl =
-        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      capturedUrl = resolveInputUrl(input);
       return bergetRefreshResponse('access', 'refresh', 300);
     };
 
@@ -232,11 +218,7 @@ describe('Token Refresh Flow - Berget API', () => {
     let callCount = 0;
 
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      if (
-        !isBergetRefreshUrl(
-          typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url,
-        )
-      ) {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
         return new Response('Not found', { status: 404 });
       }
 

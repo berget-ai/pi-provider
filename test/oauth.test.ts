@@ -2,7 +2,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-a
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { loginBerget, refreshBergetToken } from '../index';
+import { loginBerget, refreshBergetToken, resolveInputUrl } from '../index';
 
 async function hitCallback(authUrl: string): Promise<void> {
   const urlObj = new URL(authUrl);
@@ -18,8 +18,7 @@ function mockFetch(
   },
 ): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url =
-      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const url = resolveInputUrl(input);
     if (url.includes('localhost:8787/callback')) {
       return originalFetch(input, init);
     }
@@ -247,8 +246,7 @@ describe('OAuth & Token Refresh', () => {
     let capturedBody: null | string = null;
 
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const url =
-        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const url = resolveInputUrl(input);
       if (url.includes('/v1/auth/refresh')) {
         const body = init?.body;
         capturedBody = typeof body === 'string' ? body : JSON.stringify(body);

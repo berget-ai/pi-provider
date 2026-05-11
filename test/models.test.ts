@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { fetchBergetModels, mapModelToProviderConfig } from '../index';
+import { fetchBergetModels, mapModelToProviderConfig, resolveInputUrl } from '../index';
 
 describe('Model Fetching & Mapping', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -45,8 +45,7 @@ describe('Model Fetching & Mapping', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
-      const url =
-        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const url = resolveInputUrl(input);
       if (url.includes('/v1/models/chat')) {
         return new Response(
           JSON.stringify({
