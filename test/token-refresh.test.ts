@@ -160,7 +160,7 @@ describe('Token Refresh Flow - Berget API', () => {
 
   test('concurrent refreshes with same credentials → second fails after Berget invalidates token', async () => {
     let callCount = 0;
-    const inflightResolvers: Array<(value: unknown) => void> = [];
+    const inflightResolvers: Array<() => void> = [];
 
     globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       if (!isBergetRefreshUrl(resolveInputUrl(input))) {
@@ -171,7 +171,7 @@ describe('Token Refresh Flow - Berget API', () => {
       const myCallIndex = callCount;
 
       if (myCallIndex === 1) {
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           inflightResolvers.push(resolve);
         });
         return bergetRefreshResponse('access-1', 'rotated-1', 300);

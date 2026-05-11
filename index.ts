@@ -335,10 +335,23 @@ function oauthResponseHtml(success: boolean, message: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${message}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
+function parseCodeFromInput(input: string): string {
+  try {
+    const url = new URL(input);
+    const code = url.searchParams.get('code');
+    if (code) return code;
+  } catch {
+    // Not a URL, treat as raw code
+  }
+  return input;
+}
+
 async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
   callbacks: OAuthLoginCallbacks,
 ): Promise<null | string> {
+  if (!callbacks.onManualCodeInput) return null;
+
   let manualInput: string | undefined;
   let manualError: Error | undefined;
 
@@ -414,8 +427,12 @@ function startCallbackServer(expectedState: string): Promise<{
       }, OAUTH_TIMEOUT_MS());
 
       resolve({
-        cancelWait: () => settleWait?.(null),
+        cancelWait: () => {
+          clearTimeout(timeout);
+          settleWait?.(null);
+        },
         close: () => {
+          clearTimeout(timeout);
           for (const socket of activeSockets) {
             socket.destroy();
           }
@@ -423,7 +440,6 @@ function startCallbackServer(expectedState: string): Promise<{
           server.close();
         },
         server,
-        timeout,
         waitForCode: () => waitForCodePromise,
       });
     });
