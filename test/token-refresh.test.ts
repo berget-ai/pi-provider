@@ -12,10 +12,13 @@ const bergetRefreshResponse = (
   expiresIn: number,
   status = 200,
 ): Response => {
-  return new Response(JSON.stringify({ expires_in: expiresIn, refresh_token: refresh, token }), {
-    headers: { 'Content-Type': 'application/json' },
-    status,
-  });
+  return Response.json(
+    { expires_in: expiresIn, refresh_token: refresh, token },
+    {
+      headers: { 'Content-Type': 'application/json' },
+      status,
+    },
+  );
 };
 
 function expiredCreds(refresh = 'initial-refresh-token'): OAuthCredentials {
@@ -32,8 +35,8 @@ function isBergetRefreshUrl(url: string): boolean {
 
 function parseRefreshBody(init?: RequestInit): { refresh_token: string } {
   const body = init?.body;
-  const bodyStr = typeof body === 'string' ? body : JSON.stringify(body ?? '');
-  const parsed = JSON.parse(bodyStr);
+  const bodyString = typeof body === 'string' ? body : JSON.stringify(body ?? '');
+  const parsed = JSON.parse(bodyString);
   return {
     refresh_token: parsed.refresh_token ?? '',
   };
@@ -41,17 +44,17 @@ function parseRefreshBody(init?: RequestInit): { refresh_token: string } {
 
 describe('Token Refresh Flow - Berget API', () => {
   let originalFetch: typeof globalThis.fetch;
-  let originalEnv: NodeJS.ProcessEnv;
+  let originalEnvironment: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalEnv = { ...process.env };
+    originalEnvironment = { ...process.env };
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    process.env = originalEnv;
+    process.env = originalEnvironment;
   });
 
   test('refresh sends refresh_token to Berget API endpoint', async () => {
@@ -137,8 +140,8 @@ describe('Token Refresh Flow - Berget API', () => {
 
   test('refresh throws on 400 invalid_grant from Berget API', async () => {
     globalThis.fetch = async (): Promise<Response> =>
-      new Response(
-        JSON.stringify({ error: 'invalid_grant', error_description: 'Invalid refresh token' }),
+      Response.json(
+        { error: 'invalid_grant', error_description: 'Invalid refresh token' },
         { headers: { 'Content-Type': 'application/json' }, status: 400 },
       );
 
@@ -174,7 +177,7 @@ describe('Token Refresh Flow - Berget API', () => {
         return bergetRefreshResponse('access-1', 'rotated-1', 300);
       }
 
-      return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+      return Response.json({ error: 'invalid_grant' }, { status: 400 });
     };
 
     const creds = expiredCreds('initial-refresh-token');
@@ -182,7 +185,7 @@ describe('Token Refresh Flow - Berget API', () => {
     const firstPromise = refreshBergetToken(creds);
     const secondPromise = refreshBergetToken(creds);
 
-    inflightResolvers.forEach((r) => r(undefined));
+    for (const r of inflightResolvers) r();
 
     const firstResult = await firstPromise;
     expect(firstResult.refresh).toBe('rotated-1');
@@ -226,8 +229,8 @@ describe('Token Refresh Flow - Berget API', () => {
       const body = parseRefreshBody(init);
 
       if (!validTokens.has(body.refresh_token)) {
-        return new Response(
-          JSON.stringify({ error: 'invalid_grant', error_description: 'Token not found' }),
+        return Response.json(
+          { error: 'invalid_grant', error_description: 'Token not found' },
           { status: 400 },
         );
       }

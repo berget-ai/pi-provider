@@ -4,24 +4,24 @@ import { fetchBergetModels, mapModelToProviderConfig, resolveInputUrl } from '..
 
 describe('Model Fetching & Mapping', () => {
   let originalFetch: typeof globalThis.fetch;
-  let originalEnv: NodeJS.ProcessEnv;
+  let originalEnvironment: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalEnv = { ...process.env };
+    originalEnvironment = { ...process.env };
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    process.env = originalEnv;
+    process.env = originalEnvironment;
   });
 
   test('mapModelToProviderConfig maps API response to ProviderModelConfig', () => {
     const apiModel = {
-      contextWindow: 128000,
+      contextWindow: 128_000,
       id: 'meta-llama/Llama-3.3-70B-Instruct',
-      inputPricePerToken: 0.0000003,
-      outputPricePerToken: 0.0000015,
+      inputPricePerToken: 0.000_000_3,
+      outputPricePerToken: 0.000_001_5,
     };
 
     const result = mapModelToProviderConfig(apiModel);
@@ -36,8 +36,8 @@ describe('Model Fetching & Mapping', () => {
       input: 0.3,
       output: 1.5,
     });
-    expect(result.contextWindow).toBe(128000);
-    expect(result.maxTokens).toBe(16384);
+    expect(result.contextWindow).toBe(128_000);
+    expect(result.maxTokens).toBe(16_384);
     expect(result.compat).toEqual({ supportsDeveloperRole: false });
   });
 
@@ -47,23 +47,23 @@ describe('Model Fetching & Mapping', () => {
     globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
       const url = resolveInputUrl(input);
       if (url.includes('/v1/models/chat')) {
-        return new Response(
-          JSON.stringify({
+        return Response.json(
+          {
             models: [
               {
-                contextWindow: 128000,
+                contextWindow: 128_000,
                 id: 'meta-llama/Llama-3.3-70B-Instruct',
-                inputPricePerToken: 0.0000003,
-                outputPricePerToken: 0.0000015,
+                inputPricePerToken: 0.000_000_3,
+                outputPricePerToken: 0.000_001_5,
               },
               {
-                contextWindow: 128000,
+                contextWindow: 128_000,
                 id: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
-                inputPricePerToken: 0.0000001,
-                outputPricePerToken: 0.0000003,
+                inputPricePerToken: 0.000_000_1,
+                outputPricePerToken: 0.000_000_3,
               },
             ],
-          }),
+          },
           { headers: { 'Content-Type': 'application/json' }, status: 200 },
         );
       }
@@ -87,10 +87,13 @@ describe('Model Fetching & Mapping', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     globalThis.fetch = async (): Promise<Response> => {
-      return new Response(JSON.stringify({ models: [] }), {
-        headers: { 'Content-Type': 'application/json' },
-        status: 200,
-      });
+      return Response.json(
+        { models: [] },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        },
+      );
     };
 
     const models = await fetchBergetModels();
@@ -109,37 +112,37 @@ describe('Model Fetching & Mapping', () => {
 
   test('mapModelToProviderConfig uses DEFAULT_MAX_TOKENS when not provided by API', () => {
     const apiModel = {
-      contextWindow: 32000,
+      contextWindow: 32_000,
       id: 'test-model',
       inputPricePerToken: 0,
       outputPricePerToken: 0,
     };
 
     const result = mapModelToProviderConfig(apiModel);
-    expect(result.maxTokens).toBe(16384);
+    expect(result.maxTokens).toBe(16_384);
   });
 
   test('mapModelToProviderConfig calculates per-million-token costs correctly', () => {
     const apiModel = {
-      contextWindow: 128000,
+      contextWindow: 128_000,
       id: 'price-test',
-      inputPricePerToken: 0.0000005,
-      outputPricePerToken: 0.000002,
+      inputPricePerToken: 0.000_000_5,
+      outputPricePerToken: 0.000_002,
     };
 
     const result = mapModelToProviderConfig(apiModel);
     expect(result.cost.input).toBe(0.5);
-    expect(result.cost.output).toBe(2.0);
+    expect(result.cost.output).toBe(2);
   });
 
   // --- Override tests ---
 
   test('mapModelToProviderConfig applies vision override for known vision models', () => {
     const apiModel = {
-      contextWindow: 262144,
+      contextWindow: 262_144,
       id: 'google/gemma-4-31B-it',
-      inputPricePerToken: 0.00000025,
-      outputPricePerToken: 0.0000005,
+      inputPricePerToken: 0.000_000_25,
+      outputPricePerToken: 0.000_000_5,
     };
 
     const result = mapModelToProviderConfig(apiModel);
@@ -148,10 +151,10 @@ describe('Model Fetching & Mapping', () => {
 
   test('mapModelToProviderConfig applies reasoning override for known reasoning models', () => {
     const apiModel = {
-      contextWindow: 128000,
+      contextWindow: 128_000,
       id: 'openai/gpt-oss-120b',
-      inputPricePerToken: 0.0000002,
-      outputPricePerToken: 0.00000075,
+      inputPricePerToken: 0.000_000_2,
+      outputPricePerToken: 0.000_000_75,
     };
 
     const result = mapModelToProviderConfig(apiModel);
@@ -161,7 +164,7 @@ describe('Model Fetching & Mapping', () => {
 
   test('mapModelToProviderConfig defaults unknown models to text-only without reasoning', () => {
     const apiModel = {
-      contextWindow: 64000,
+      contextWindow: 64_000,
       id: 'future-model-v99',
       inputPricePerToken: 0,
       outputPricePerToken: 0,
@@ -174,17 +177,17 @@ describe('Model Fetching & Mapping', () => {
 
   test('mapModelToProviderConfig preserves cost and contextWindow when applying override', () => {
     const apiModel = {
-      contextWindow: 262144,
+      contextWindow: 262_144,
       id: 'mistralai/Mistral-Medium-3.5-128B',
-      inputPricePerToken: 0.0000015,
-      outputPricePerToken: 0.000005,
+      inputPricePerToken: 0.000_001_5,
+      outputPricePerToken: 0.000_005,
     };
 
     const result = mapModelToProviderConfig(apiModel);
 
     expect(result.input).toEqual(['text', 'image']);
     expect(result.reasoning).toBe(true);
-    expect(result.contextWindow).toBe(262144);
+    expect(result.contextWindow).toBe(262_144);
     expect(result.cost.input).toBe(1.5);
     expect(result.cost.output).toBe(5);
     expect(result.cost.cacheRead).toBe(0);

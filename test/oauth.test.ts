@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { loginBerget, refreshBergetToken, resolveInputUrl } from '../index';
 
 async function hitCallback(authUrl: string): Promise<void> {
-  const urlObj = new URL(authUrl);
-  const state = urlObj.searchParams.get('state')!;
+  const urlObject = new URL(authUrl);
+  const state = urlObject.searchParams.get('state')!;
   const resp = await fetch(`http://localhost:8787/callback?code=test-auth-code&state=${state}`);
   await resp.text();
 }
@@ -24,14 +24,14 @@ function mockFetch(
     }
     if (url.includes('/openid-connect/token')) {
       const body = init?.body;
-      const bodyStr = body instanceof URLSearchParams ? body.toString() : String(body ?? '');
-      if (overrides?.onToken) return overrides.onToken(bodyStr);
-      return new Response(
-        JSON.stringify({
+      const bodyString = body instanceof URLSearchParams ? body.toString() : String(body ?? '');
+      if (overrides?.onToken) return overrides.onToken(bodyString);
+      return Response.json(
+        {
           access_token: 'test-access-token',
           expires_in: 300,
           refresh_token: 'test-refresh-token',
-        }),
+        },
         { headers: { 'Content-Type': 'application/json' }, status: 200 },
       );
     }
@@ -41,16 +41,16 @@ function mockFetch(
 
 describe('OAuth & Token Refresh', () => {
   let originalFetch: typeof globalThis.fetch;
-  let originalEnv: NodeJS.ProcessEnv;
+  let originalEnvironment: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalEnv = { ...process.env };
+    originalEnvironment = { ...process.env };
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    process.env = originalEnv;
+    process.env = originalEnvironment;
   });
 
   test('login() starts callback server and generates correct PKCE auth URL', async () => {
@@ -105,12 +105,12 @@ describe('OAuth & Token Refresh', () => {
     globalThis.fetch = mockFetch(originalFetch, {
       onToken: (body) => {
         capturedTokenBody = body;
-        return new Response(
-          JSON.stringify({
+        return Response.json(
+          {
             access_token: 'test-access-token',
             expires_in: 300,
             refresh_token: 'test-refresh-token',
-          }),
+          },
           { headers: { 'Content-Type': 'application/json' }, status: 200 },
         );
       },
@@ -222,8 +222,8 @@ describe('OAuth & Token Refresh', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: (info) => resolveAuthUrl(info.url),
-      onProgress: (msg) => {
-        progressMessage = msg;
+      onProgress: (message) => {
+        progressMessage = message;
       },
       onPrompt: async () => 'test-auth-code',
     };
@@ -250,12 +250,12 @@ describe('OAuth & Token Refresh', () => {
       if (url.includes('/v1/auth/refresh')) {
         const body = init?.body;
         capturedBody = typeof body === 'string' ? body : JSON.stringify(body);
-        return new Response(
-          JSON.stringify({
+        return Response.json(
+          {
             expires_in: 300,
             refresh_token: 'new-refresh-token',
             token: 'new-access-token',
-          }),
+          },
           { headers: { 'Content-Type': 'application/json' }, status: 200 },
         );
       }
@@ -313,7 +313,7 @@ describe('OAuth & Token Refresh', () => {
   test('getApiKey returns cred.access', () => {
     const cred: OAuthCredentials = {
       access: 'my-access-token',
-      expires: Date.now() + 60000,
+      expires: Date.now() + 60_000,
       refresh: 'r',
     };
     expect(cred.access).toBe('my-access-token');
@@ -325,12 +325,12 @@ describe('OAuth & Token Refresh', () => {
     let callCount = 0;
     globalThis.fetch = async (): Promise<Response> => {
       callCount++;
-      return new Response(
-        JSON.stringify({
+      return Response.json(
+        {
           expires_in: 300,
           refresh_token: `refresh-token-${callCount}`,
           token: `access-token-${callCount}`,
-        }),
+        },
         { headers: { 'Content-Type': 'application/json' }, status: 200 },
       );
     };

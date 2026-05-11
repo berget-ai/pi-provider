@@ -6,7 +6,7 @@ import * as http from 'node:http';
 
 // === Constants ===
 
-const DEFAULT_MAX_TOKENS = 16384;
+const DEFAULT_MAX_TOKENS = 16_384;
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 60 * 1000;
 const KEYCLOAK_CLIENT_ID = 'berget-code';
 const CALLBACK_PORT = 8787;
@@ -14,7 +14,7 @@ const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const OAUTH_TIMEOUT_MS = (): number =>
-  parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
+  Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
 
 // === Model Capability Overrides ===
 // Manual overrides for model capabilities not returned by /v1/models/chat.
@@ -72,7 +72,7 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
     throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
   }
   const data = (await response.json()) as BergetModelResponse;
-  return data.models.map(mapModelToProviderConfig);
+  return data.models.map((model) => mapModelToProviderConfig(model));
 }
 
 // === Model Fetching & Mapping ===
@@ -153,16 +153,16 @@ export function resolveInputUrl(input: RequestInfo | URL): string {
 
 function base64URLEncode(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
-  let str = '';
+  let string_ = '';
   for (const byte of bytes) {
-    str += String.fromCharCode(byte);
+    string_ += String.fromCodePoint(byte);
   }
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').split('=')[0];
+  return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
 }
 
 function buildAuthUrl(challenge: string, state: string): string {
   const authBaseUrl = getAuthUrl();
-  const params = new URLSearchParams({
+  const parameters = new URLSearchParams({
     client_id: KEYCLOAK_CLIENT_ID,
     code_challenge: challenge,
     code_challenge_method: 'S256',
@@ -171,7 +171,7 @@ function buildAuthUrl(challenge: string, state: string): string {
     scope: 'openid email profile offline_access',
     state,
   });
-  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${params.toString()}`;
+  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
 }
 
 async function collectAuthCode(
@@ -199,8 +199,8 @@ async function collectAuthCode(
     }
 
     if (code) return code;
-  } catch (err) {
-    if (err instanceof Error && err.message.includes('EADDRINUSE')) throw err;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('EADDRINUSE')) throw error;
   } finally {
     callbackServer?.close();
   }
@@ -279,13 +279,13 @@ function getInferenceUrl(): string {
 }
 
 function handleOAuthRequest(
-  req: http.IncomingMessage,
+  request: http.IncomingMessage,
   res: http.ServerResponse,
   expectedState: string,
   settleWait: (value: CallbackResult | null) => void,
 ): void {
   try {
-    const parsed = new URL(req.url || '/', 'http://localhost');
+    const parsed = new URL(request.url || '/', 'http://localhost');
     if (parsed.pathname !== CALLBACK_PATH) {
       res.writeHead(404, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
       res.end(oauthResponseHtml(false, 'Not found.'));
@@ -349,8 +349,8 @@ async function resolveManualCode(
       callbackServer.cancelWait();
       return input;
     })
-    .catch((err) => {
-      manualError = err instanceof Error ? err : new Error(String(err));
+    .catch((error) => {
+      manualError = error instanceof Error ? error : new Error(String(error));
       callbackServer.cancelWait();
     });
 
@@ -385,9 +385,9 @@ function startCallbackServer(expectedState: string): Promise<{
       };
     });
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer((request, res) => {
       if (settleWait) {
-        handleOAuthRequest(req, res, expectedState, settleWait);
+        handleOAuthRequest(request, res, expectedState, settleWait);
       }
     });
 
@@ -396,15 +396,15 @@ function startCallbackServer(expectedState: string): Promise<{
       socket.once('close', () => activeSockets.delete(socket));
     });
 
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
         reject(
           new Error(
             `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`,
           ),
         );
       } else {
-        reject(err);
+        reject(error);
       }
     });
 

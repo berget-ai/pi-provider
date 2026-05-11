@@ -4,16 +4,16 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 describe('Extension Entry Point', () => {
   let originalFetch: typeof globalThis.fetch;
-  let originalEnv: NodeJS.ProcessEnv;
+  let originalEnvironment: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalEnv = { ...process.env };
+    originalEnvironment = { ...process.env };
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    process.env = originalEnv;
+    process.env = originalEnvironment;
   });
 
   test('registerProvider is called with correct config', async () => {
@@ -21,17 +21,17 @@ describe('Extension Entry Point', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     globalThis.fetch = async (): Promise<Response> => {
-      return new Response(
-        JSON.stringify({
+      return Response.json(
+        {
           models: [
             {
-              contextWindow: 128000,
+              contextWindow: 128_000,
               id: 'meta-llama/Llama-3.3-70B-Instruct',
-              inputPricePerToken: 0.0000003,
-              outputPricePerToken: 0.0000015,
+              inputPricePerToken: 0.000_000_3,
+              outputPricePerToken: 0.000_001_5,
             },
           ],
-        }),
+        },
         { headers: { 'Content-Type': 'application/json' }, status: 200 },
       );
     };
@@ -68,10 +68,13 @@ describe('Extension Entry Point', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     globalThis.fetch = async (): Promise<Response> => {
-      return new Response(JSON.stringify({ models: [] }), {
-        headers: { 'Content-Type': 'application/json' },
-        status: 200,
-      });
+      return Response.json(
+        { models: [] },
+        {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        },
+      );
     };
 
     let capturedConfig: null | ProviderConfig = null;
@@ -85,7 +88,7 @@ describe('Extension Entry Point', () => {
     const { default: extension } = await import('../index');
     await extension(mockPi as ExtensionAPI);
 
-    const cred = { access: 'my-access-token', expires: Date.now() + 60000, refresh: 'r' };
+    const cred = { access: 'my-access-token', expires: Date.now() + 60_000, refresh: 'r' };
     expect(capturedConfig!.oauth!.getApiKey(cred)).toBe('my-access-token');
   });
 
@@ -114,18 +117,18 @@ describe('Extension Entry Point', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     globalThis.fetch = async (): Promise<Response> => {
-      return new Response(
-        JSON.stringify({
+      return Response.json(
+        {
           models: [
-            { contextWindow: 32000, id: 'model-a', inputPricePerToken: 0, outputPricePerToken: 0 },
+            { contextWindow: 32_000, id: 'model-a', inputPricePerToken: 0, outputPricePerToken: 0 },
             {
-              contextWindow: 128000,
+              contextWindow: 128_000,
               id: 'model-b',
-              inputPricePerToken: 0.000001,
-              outputPricePerToken: 0.000003,
+              inputPricePerToken: 0.000_001,
+              outputPricePerToken: 0.000_003,
             },
           ],
-        }),
+        },
         { headers: { 'Content-Type': 'application/json' }, status: 200 },
       );
     };
