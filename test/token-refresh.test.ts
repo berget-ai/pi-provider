@@ -1,14 +1,28 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { refreshBergetToken } from "../index";
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
+
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
+import { refreshBergetToken } from "../index";
 
 const EXPIRY_BUFFER_MS = 60 * 1000;
 
+const bergetRefreshResponse = (
+  token: string,
+  refresh: string,
+  expiresIn: number,
+  status = 200
+): Response => {
+  return new Response(JSON.stringify({ expires_in: expiresIn, refresh_token: refresh, token }), {
+    headers: { "Content-Type": "application/json" },
+    status,
+  });
+};
+
 function expiredCreds(refresh = "initial-refresh-token"): OAuthCredentials {
   return {
-    refresh,
     access: "old-access-token",
     expires: Date.now() - 1000,
+    refresh,
   };
 }
 
@@ -23,18 +37,6 @@ function parseRefreshBody(init?: RequestInit): { refresh_token: string } {
   return {
     refresh_token: parsed.refresh_token ?? "",
   };
-}
-
-function bergetRefreshResponse(
-  token: string,
-  refresh: string,
-  expiresIn: number,
-  status = 200
-): Response {
-  return new Response(JSON.stringify({ token, refresh_token: refresh, expires_in: expiresIn }), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 describe("Token Refresh Flow - Berget API", () => {
@@ -55,7 +57,7 @@ describe("Token Refresh Flow - Berget API", () => {
   test("refresh sends refresh_token to Berget API endpoint", async () => {
     let capturedInit: RequestInit | undefined;
     let capturedUrl: string | undefined;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       capturedUrl =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       capturedInit = init;
@@ -73,7 +75,8 @@ describe("Token Refresh Flow - Berget API", () => {
   });
 
   test("refresh returns new access token, rotated refresh token, and correct expires", async () => {
-    globalThis.fetch = async () => bergetRefreshResponse("access-1", "rotated-1", 300);
+    globalThis.fetch = async (): Promise<Response> =>
+      bergetRefreshResponse("access-1", "rotated-1", 300);
 
     const beforeRefresh = Date.now();
     const result = await refreshBergetToken(expiredCreds("old-refresh"));
@@ -87,7 +90,7 @@ describe("Token Refresh Flow - Berget API", () => {
 
   test("full lifecycle: login → access expires → refresh → access expires → refresh again", async () => {
     let callCount = 0;
-    globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       if (
         !isBergetRefreshUrl(
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
@@ -117,7 +120,7 @@ describe("Token Refresh Flow - Berget API", () => {
   test("each refresh sends the previous rotated refresh_token", async () => {
     const capturedTokens: string[] = [];
     let callCount = 0;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (
         !isBergetRefreshUrl(
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
@@ -142,10 +145,10 @@ describe("Token Refresh Flow - Berget API", () => {
   });
 
   test("refresh throws on 400 invalid_grant from Berget API", async () => {
-    globalThis.fetch = async () =>
+    globalThis.fetch = async (): Promise<Response> =>
       new Response(
         JSON.stringify({ error: "invalid_grant", error_description: "Invalid refresh token" }),
-        { status: 400, headers: { "Content-Type": "application/json" } }
+        { headers: { "Content-Type": "application/json" }, status: 400 }
       );
 
     await expect(refreshBergetToken(expiredCreds("stale-token"))).rejects.toThrow(
@@ -154,7 +157,7 @@ describe("Token Refresh Flow - Berget API", () => {
   });
 
   test("refresh throws on 401 from Berget API", async () => {
-    globalThis.fetch = async () => new Response("Unauthorized", { status: 401 });
+    globalThis.fetch = async (): Promise<Response> => new Response("Unauthorized", { status: 401 });
 
     await expect(refreshBergetToken(expiredCreds("expired-token"))).rejects.toThrow(
       "Token refresh failed: 401"
@@ -165,7 +168,7 @@ describe("Token Refresh Flow - Berget API", () => {
     let callCount = 0;
     const inflightResolvers: Array<(value: unknown) => void> = [];
 
-    globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       if (
         !isBergetRefreshUrl(
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
@@ -201,7 +204,8 @@ describe("Token Refresh Flow - Berget API", () => {
   });
 
   test("refresh with short expires_in from Berget API", async () => {
-    globalThis.fetch = async () => bergetRefreshResponse("access-1", "rotated-1", 60);
+    globalThis.fetch = async (): Promise<Response> =>
+      bergetRefreshResponse("access-1", "rotated-1", 60);
 
     const result = await refreshBergetToken(expiredCreds("old-token"));
 
@@ -213,7 +217,7 @@ describe("Token Refresh Flow - Berget API", () => {
   test("refresh uses BERGET_API_URL env var", async () => {
     process.env.BERGET_API_URL = "https://custom-api.example.com";
     let capturedUrl: string | undefined;
-    globalThis.fetch = async (input: RequestInfo | URL) => {
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
       capturedUrl =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       return bergetRefreshResponse("access", "refresh", 300);
@@ -227,7 +231,7 @@ describe("Token Refresh Flow - Berget API", () => {
     const validTokens = new Set(["initial-refresh-token"]);
     let callCount = 0;
 
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (
         !isBergetRefreshUrl(
           typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url

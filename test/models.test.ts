@@ -1,4 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
 import { fetchBergetModels, mapModelToProviderConfig } from "../index";
 
 describe("Model Fetching & Mapping", () => {
@@ -17,8 +18,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig maps API response to ProviderModelConfig", () => {
     const apiModel = {
-      id: "meta-llama/Llama-3.3-70B-Instruct",
       contextWindow: 128000,
+      id: "meta-llama/Llama-3.3-70B-Instruct",
       inputPricePerToken: 0.0000003,
       outputPricePerToken: 0.0000015,
     };
@@ -30,10 +31,10 @@ describe("Model Fetching & Mapping", () => {
     expect(result.reasoning).toBe(false);
     expect(result.input).toEqual(["text"]);
     expect(result.cost).toEqual({
-      input: 0.3,
-      output: 1.5,
       cacheRead: 0,
       cacheWrite: 0,
+      input: 0.3,
+      output: 1.5,
     });
     expect(result.contextWindow).toBe(128000);
     expect(result.maxTokens).toBe(16384);
@@ -43,7 +44,7 @@ describe("Model Fetching & Mapping", () => {
   test("fetchBergetModels returns mapped models from API", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async (input: RequestInfo | URL) => {
+    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes("/v1/models/chat")) {
@@ -51,20 +52,20 @@ describe("Model Fetching & Mapping", () => {
           JSON.stringify({
             models: [
               {
-                id: "meta-llama/Llama-3.3-70B-Instruct",
                 contextWindow: 128000,
+                id: "meta-llama/Llama-3.3-70B-Instruct",
                 inputPricePerToken: 0.0000003,
                 outputPricePerToken: 0.0000015,
               },
               {
-                id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
                 contextWindow: 128000,
+                id: "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
                 inputPricePerToken: 0.0000001,
                 outputPricePerToken: 0.0000003,
               },
             ],
           }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
+          { headers: { "Content-Type": "application/json" }, status: 200 }
         );
       }
       return new Response("Not found", { status: 404 });
@@ -86,10 +87,10 @@ describe("Model Fetching & Mapping", () => {
   test("fetchBergetModels returns empty array for empty models response", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response(JSON.stringify({ models: [] }), {
-        status: 200,
         headers: { "Content-Type": "application/json" },
+        status: 200,
       });
     };
 
@@ -100,7 +101,7 @@ describe("Model Fetching & Mapping", () => {
   test("fetchBergetModels throws on API failure", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response("Internal Server Error", { status: 500 });
     };
 
@@ -109,8 +110,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig uses DEFAULT_MAX_TOKENS when not provided by API", () => {
     const apiModel = {
-      id: "test-model",
       contextWindow: 32000,
+      id: "test-model",
       inputPricePerToken: 0,
       outputPricePerToken: 0,
     };
@@ -121,8 +122,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig calculates per-million-token costs correctly", () => {
     const apiModel = {
-      id: "price-test",
       contextWindow: 128000,
+      id: "price-test",
       inputPricePerToken: 0.0000005,
       outputPricePerToken: 0.000002,
     };
@@ -136,8 +137,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig applies vision override for known vision models", () => {
     const apiModel = {
-      id: "google/gemma-4-31B-it",
       contextWindow: 262144,
+      id: "google/gemma-4-31B-it",
       inputPricePerToken: 0.00000025,
       outputPricePerToken: 0.0000005,
     };
@@ -148,8 +149,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig applies reasoning override for known reasoning models", () => {
     const apiModel = {
-      id: "openai/gpt-oss-120b",
       contextWindow: 128000,
+      id: "openai/gpt-oss-120b",
       inputPricePerToken: 0.0000002,
       outputPricePerToken: 0.00000075,
     };
@@ -161,8 +162,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig defaults unknown models to text-only without reasoning", () => {
     const apiModel = {
-      id: "future-model-v99",
       contextWindow: 64000,
+      id: "future-model-v99",
       inputPricePerToken: 0,
       outputPricePerToken: 0,
     };
@@ -174,8 +175,8 @@ describe("Model Fetching & Mapping", () => {
 
   test("mapModelToProviderConfig preserves cost and contextWindow when applying override", () => {
     const apiModel = {
-      id: "mistralai/Mistral-Medium-3.5-128B",
       contextWindow: 262144,
+      id: "mistralai/Mistral-Medium-3.5-128B",
       inputPricePerToken: 0.0000015,
       outputPricePerToken: 0.000005,
     };

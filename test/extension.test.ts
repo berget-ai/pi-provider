@@ -1,5 +1,6 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import type { ProviderConfig, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 describe("Extension Entry Point", () => {
   let originalFetch: typeof globalThis.fetch;
@@ -19,27 +20,27 @@ describe("Extension Entry Point", () => {
     process.env.BERGET_INFERENCE_URL = "https://test-inference.berget.ai";
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response(
         JSON.stringify({
           models: [
             {
-              id: "meta-llama/Llama-3.3-70B-Instruct",
               contextWindow: 128000,
+              id: "meta-llama/Llama-3.3-70B-Instruct",
               inputPricePerToken: 0.0000003,
               outputPricePerToken: 0.0000015,
             },
           ],
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { headers: { "Content-Type": "application/json" }, status: 200 }
       );
     };
 
-    let capturedName: string | null = null;
-    let capturedConfig: ProviderConfig | null = null;
+    let capturedName: null | string = null;
+    let capturedConfig: null | ProviderConfig = null;
 
     const mockPi = {
-      registerProvider: (name: string, config: ProviderConfig) => {
+      registerProvider: (name: string, config: ProviderConfig): void => {
         capturedName = name;
         capturedConfig = config;
       },
@@ -66,17 +67,17 @@ describe("Extension Entry Point", () => {
   test("oauth.getApiKey returns cred.access", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response(JSON.stringify({ models: [] }), {
-        status: 200,
         headers: { "Content-Type": "application/json" },
+        status: 200,
       });
     };
 
-    let capturedConfig: ProviderConfig | null = null;
+    let capturedConfig: null | ProviderConfig = null;
 
     const mockPi = {
-      registerProvider: (_name: string, config: ProviderConfig) => {
+      registerProvider: (name: string, config: ProviderConfig): void => {
         capturedConfig = config;
       },
     };
@@ -84,20 +85,20 @@ describe("Extension Entry Point", () => {
     const { default: extension } = await import("../index");
     await extension(mockPi as ExtensionAPI);
 
-    const cred = { refresh: "r", access: "my-access-token", expires: Date.now() + 60000 };
+    const cred = { access: "my-access-token", expires: Date.now() + 60000, refresh: "r" };
     expect(capturedConfig!.oauth!.getApiKey(cred)).toBe("my-access-token");
   });
 
   test("extension throws if model fetch fails (does not register)", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response("Internal Server Error", { status: 500 });
     };
 
     let registerCalled = false;
     const mockPi = {
-      registerProvider: () => {
+      registerProvider: (): void => {
         registerCalled = true;
       },
     };
@@ -112,26 +113,26 @@ describe("Extension Entry Point", () => {
   test("all models have compat.supportsDeveloperRole = false", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       return new Response(
         JSON.stringify({
           models: [
-            { id: "model-a", contextWindow: 32000, inputPricePerToken: 0, outputPricePerToken: 0 },
+            { contextWindow: 32000, id: "model-a", inputPricePerToken: 0, outputPricePerToken: 0 },
             {
-              id: "model-b",
               contextWindow: 128000,
+              id: "model-b",
               inputPricePerToken: 0.000001,
               outputPricePerToken: 0.000003,
             },
           ],
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { headers: { "Content-Type": "application/json" }, status: 200 }
       );
     };
 
-    let capturedConfig: ProviderConfig | null = null;
+    let capturedConfig: null | ProviderConfig = null;
     const mockPi = {
-      registerProvider: (_name: string, config: ProviderConfig) => {
+      registerProvider: (name: string, config: ProviderConfig): void => {
         capturedConfig = config;
       },
     };

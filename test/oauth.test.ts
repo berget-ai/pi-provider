@@ -1,13 +1,22 @@
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { loginBerget, refreshBergetToken } from "../index";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
+import { loginBerget, refreshBergetToken } from "../index";
+
+async function hitCallback(authUrl: string): Promise<void> {
+  const urlObj = new URL(authUrl);
+  const state = urlObj.searchParams.get("state")!;
+  const resp = await fetch(`http://localhost:8787/callback?code=test-auth-code&state=${state}`);
+  await resp.text();
+}
 
 function mockFetch(
   originalFetch: typeof globalThis.fetch,
   overrides?: {
     onToken?: (body: string) => Response;
   }
-) {
+): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> {
   return async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -21,21 +30,14 @@ function mockFetch(
       return new Response(
         JSON.stringify({
           access_token: "test-access-token",
-          refresh_token: "test-refresh-token",
           expires_in: 300,
+          refresh_token: "test-refresh-token",
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { headers: { "Content-Type": "application/json" }, status: 200 }
       );
     }
     return new Response("Not found", { status: 404 });
   };
-}
-
-async function hitCallback(authUrl: string) {
-  const urlObj = new URL(authUrl);
-  const state = urlObj.searchParams.get("state")!;
-  const resp = await fetch(`http://localhost:8787/callback?code=test-auth-code&state=${state}`);
-  await resp.text();
 }
 
 describe("OAuth & Token Refresh", () => {
@@ -57,8 +59,8 @@ describe("OAuth & Token Refresh", () => {
     process.env.BERGET_OAUTH_TIMEOUT_MS = "1000";
 
     let resolveAuthUrl: (url: string) => void;
-    const authUrlPromise = new Promise<string>(r => {
-      resolveAuthUrl = r;
+    const authUrlPromise = new Promise<string>(resolve => {
+      resolveAuthUrl = resolve;
     });
 
     const callbacks: OAuthLoginCallbacks = {
@@ -89,11 +91,11 @@ describe("OAuth & Token Refresh", () => {
     process.env.BERGET_AUTH_URL = "https://test-login.berget.ai";
     process.env.BERGET_OAUTH_TIMEOUT_MS = "1000";
 
-    let capturedTokenBody: string | null = null;
+    let capturedTokenBody: null | string = null;
 
     let resolveAuthUrl: (url: string) => void;
-    const authUrlPromise = new Promise<string>(r => {
-      resolveAuthUrl = r;
+    const authUrlPromise = new Promise<string>(resolve => {
+      resolveAuthUrl = resolve;
     });
 
     const callbacks: OAuthLoginCallbacks = {
@@ -107,10 +109,10 @@ describe("OAuth & Token Refresh", () => {
         return new Response(
           JSON.stringify({
             access_token: "test-access-token",
-            refresh_token: "test-refresh-token",
             expires_in: 300,
+            refresh_token: "test-refresh-token",
           }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
+          { headers: { "Content-Type": "application/json" }, status: 200 }
         );
       },
     });
@@ -162,8 +164,8 @@ describe("OAuth & Token Refresh", () => {
     process.env.BERGET_OAUTH_TIMEOUT_MS = "1000";
 
     let resolveAuthUrl: (url: string) => void;
-    const authUrlPromise = new Promise<string>(r => {
-      resolveAuthUrl = r;
+    const authUrlPromise = new Promise<string>(resolve => {
+      resolveAuthUrl = resolve;
     });
 
     const callbacks: OAuthLoginCallbacks = {
@@ -194,11 +196,11 @@ describe("OAuth & Token Refresh", () => {
       onAuth: async () => {
         // auth URL resolution logic would go here
       },
-      onPrompt: async () => "fallback-code",
       onManualCodeInput: async () => {
         manualInputCalled = true;
         return "http://localhost:8787/callback?code=manual-code&state=will-be-ignored";
       },
+      onPrompt: async () => "fallback-code",
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -214,17 +216,17 @@ describe("OAuth & Token Refresh", () => {
     process.env.BERGET_OAUTH_TIMEOUT_MS = "1000";
 
     let resolveAuthUrl: (url: string) => void;
-    const authUrlPromise = new Promise<string>(r => {
-      resolveAuthUrl = r;
+    const authUrlPromise = new Promise<string>(resolve => {
+      resolveAuthUrl = resolve;
     });
     let progressMessage = "";
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: info => resolveAuthUrl(info.url),
-      onPrompt: async () => "test-auth-code",
       onProgress: msg => {
         progressMessage = msg;
       },
+      onPrompt: async () => "test-auth-code",
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -242,9 +244,9 @@ describe("OAuth & Token Refresh", () => {
   test("refreshToken() calls Berget API refresh endpoint", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    let capturedBody: string | null = null;
+    let capturedBody: null | string = null;
 
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url.includes("/v1/auth/refresh")) {
@@ -252,20 +254,20 @@ describe("OAuth & Token Refresh", () => {
         capturedBody = typeof body === "string" ? body : JSON.stringify(body);
         return new Response(
           JSON.stringify({
-            token: "new-access-token",
-            refresh_token: "new-refresh-token",
             expires_in: 300,
+            refresh_token: "new-refresh-token",
+            token: "new-access-token",
           }),
-          { status: 200, headers: { "Content-Type": "application/json" } }
+          { headers: { "Content-Type": "application/json" }, status: 200 }
         );
       }
       return new Response("Not found", { status: 404 });
     };
 
     const inputCreds: OAuthCredentials = {
-      refresh: "old-refresh-token",
       access: "old-access-token",
       expires: Date.now() - 1000,
+      refresh: "old-refresh-token",
     };
 
     const beforeRefresh = Date.now();
@@ -283,12 +285,12 @@ describe("OAuth & Token Refresh", () => {
   test("refreshToken() throws on 401 failure", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => new Response("Unauthorized", { status: 401 });
+    globalThis.fetch = async (): Promise<Response> => new Response("Unauthorized", { status: 401 });
 
     const inputCreds: OAuthCredentials = {
-      refresh: "expired-refresh-token",
       access: "old-access-token",
       expires: Date.now() - 1000,
+      refresh: "expired-refresh-token",
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow("Token refresh failed: 401");
@@ -297,14 +299,14 @@ describe("OAuth & Token Refresh", () => {
   test("refreshToken() throws on network error", async () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       throw new Error("Network error");
     };
 
     const inputCreds: OAuthCredentials = {
-      refresh: "some-refresh-token",
       access: "some-access-token",
       expires: Date.now() - 1000,
+      refresh: "some-refresh-token",
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow("Network error");
@@ -312,9 +314,9 @@ describe("OAuth & Token Refresh", () => {
 
   test("getApiKey returns cred.access", () => {
     const cred: OAuthCredentials = {
-      refresh: "r",
       access: "my-access-token",
       expires: Date.now() + 60000,
+      refresh: "r",
     };
     expect(cred.access).toBe("my-access-token");
   });
@@ -323,22 +325,22 @@ describe("OAuth & Token Refresh", () => {
     process.env.BERGET_API_URL = "https://test-api.berget.ai";
 
     let callCount = 0;
-    globalThis.fetch = async () => {
+    globalThis.fetch = async (): Promise<Response> => {
       callCount++;
       return new Response(
         JSON.stringify({
-          token: `access-token-${callCount}`,
-          refresh_token: `refresh-token-${callCount}`,
           expires_in: 300,
+          refresh_token: `refresh-token-${callCount}`,
+          token: `access-token-${callCount}`,
         }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
+        { headers: { "Content-Type": "application/json" }, status: 200 }
       );
     };
 
     const creds: OAuthCredentials = {
-      refresh: "initial-refresh-token",
       access: "initial-access-token",
       expires: Date.now() - 1000,
+      refresh: "initial-refresh-token",
     };
 
     const firstRefresh = await refreshBergetToken(creds);
@@ -353,16 +355,16 @@ describe("OAuth & Token Refresh", () => {
   test("refreshToken() with non-JSON response body throws", async () => {
     process.env.BERGET_AUTH_URL = "https://test-auth.berget.ai";
 
-    globalThis.fetch = async () =>
+    globalThis.fetch = async (): Promise<Response> =>
       new Response("<html>Internal Server Error</html>", {
-        status: 200,
         headers: { "Content-Type": "text/html" },
+        status: 200,
       });
 
     const inputCreds: OAuthCredentials = {
-      refresh: "old-refresh-token",
       access: "old-access-token",
       expires: Date.now() - 1000,
+      refresh: "old-refresh-token",
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow();
