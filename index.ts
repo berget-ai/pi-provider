@@ -2,6 +2,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-a
 import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
+import { AuthStorage } from '@earendil-works/pi-coding-agent';
 import * as http from 'node:http';
 
 // === Constants ===
@@ -65,6 +66,13 @@ interface CallbackResult {
   state: string;
 }
 
+export function createStreamInterceptor(
+  streamFn: (request: Request, apiKey: string) => Promise<Response>,
+): (request: Request, apiKey: string) => Promise<Response> {
+  return async (request: Request, apiKey: string): Promise<Response> =>
+    processStreamWithRetry(request, apiKey, streamFn, 0);
+}
+
 export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
@@ -74,8 +82,6 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const data = (await response.json()) as BergetModelResponse;
   return data.models.map((model) => mapModelToProviderConfig(model));
 }
-
-// === Model Fetching & Mapping ===
 
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { challenge, verifier } = await generatePKCE();
@@ -93,6 +99,8 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
 
   return exchangeToken(code, verifier);
 }
+
+// === Model Fetching & Mapping ===
 
 export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
   const base: ProviderModelConfig = {
@@ -115,6 +123,55 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
 
   const override = MODEL_OVERRIDES[model.id];
   return override ? { ...base, ...override } : base;
+}
+
+export async function refreshBergetAuthToken(
+  apiKey: string,
+): Promise<null | { apiKey: string; newCredentials: OAuthCredentials }> {
+  const storage = AuthStorage.create();
+  const cred = storage.get('berget');
+
+  if (!cred || cred.type !== 'oauth') {
+    return null;
+  }
+
+  const currentAccess = cred.access;
+
+  const now = Date.now();
+
+  if (currentAccess !== apiKey && now < cred.expires) {
+    return { apiKey: cred.access, newCredentials: cred };
+  }
+
+  const apiUrl = getApiUrl();
+  const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
+    body: JSON.stringify({
+      refresh_token: cred.refresh,
+    }),
+    headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Token refresh failed: ${response.status} ${errorText}`);
+  }
+
+  const data = (await response.json()) as {
+    expires_in: number;
+    refresh_token?: string;
+    token: string;
+  };
+
+  const newCredentials: OAuthCredentials = {
+    access: data.token,
+    expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+    refresh: data.refresh_token || cred.refresh,
+  };
+
+  storage.set('berget', { ...newCredentials, type: 'oauth' });
+
+  return { apiKey: newCredentials.access, newCredentials };
 }
 
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -243,10 +300,6 @@ async function exchangeToken(code: string, verifier: string): Promise<OAuthCrede
   };
 }
 
-// === OAuth ===
-
-// === Callback Server ===
-
 async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
   const verifierBytes = new Uint8Array(32);
   crypto.getRandomValues(verifierBytes);
@@ -264,11 +317,13 @@ function generateRandomString(): string {
   return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// === OAuth ===
+
+// === Callback Server ===
+
 function getApiUrl(): string {
   return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
-
-// === OAuth ===
 
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
@@ -276,6 +331,38 @@ function getAuthUrl(): string {
 
 function getInferenceUrl(): string {
   return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
+}
+
+// === OAuth ===
+
+async function handleAuthErrorAndRetry(
+  request: Request,
+  apiKey: string,
+  streamFn: (request: Request, apiKey: string) => Promise<Response>,
+): Promise<null | Response> {
+  const refreshResult = await refreshBergetAuthToken(apiKey);
+  if (!refreshResult) {
+    return null;
+  }
+
+  const retryResponse = await streamFn(request, refreshResult.apiKey);
+  const retryReader = retryResponse.body?.getReader();
+
+  if (!retryReader) {
+    return retryResponse;
+  }
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      await readStreamToController(retryReader, controller);
+    },
+  });
+
+  return new Response(stream, {
+    headers: retryResponse.headers,
+    status: retryResponse.status,
+    statusText: retryResponse.statusText,
+  });
 }
 
 function handleOAuthRequest(
@@ -323,6 +410,16 @@ function handleOAuthRequest(
   }
 }
 
+function isAuthenticationError(chunk: Uint8Array): boolean {
+  const text = new TextDecoder().decode(chunk);
+  return (
+    text.includes('401') ||
+    text.includes('Unauthorized') ||
+    text.includes('invalid_token') ||
+    text.includes('Invalid token')
+  );
+}
+
 // === PKCE Helpers ===
 
 function oauthResponseHtml(success: boolean, message: string): string {
@@ -344,6 +441,74 @@ function parseCodeFromInput(input: string): string {
     // Not a URL, treat as raw code
   }
   return input;
+}
+
+async function processStreamWithRetry(
+  request: Request,
+  apiKey: string,
+  streamFn: (request: Request, apiKey: string) => Promise<Response>,
+  attempt: number,
+): Promise<Response> {
+  const response = await streamFn(request, apiKey);
+  const reader = response.body?.getReader();
+
+  if (!reader) {
+    return response;
+  }
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let pushedAny = false;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            controller.close();
+            return;
+          }
+
+          if (!pushedAny && attempt === 0 && isAuthenticationError(value)) {
+            const retryResponse = await handleAuthErrorAndRetry(request, apiKey, streamFn);
+
+            if (retryResponse) {
+              const retryReader = retryResponse.body?.getReader();
+              if (retryReader) {
+                await readStreamToController(retryReader, controller);
+              }
+            }
+            return;
+          }
+
+          controller.enqueue(value);
+          pushedAny = true;
+        }
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+async function readStreamToController(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: ReadableStreamDefaultController,
+): Promise<void> {
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      controller.close();
+      return;
+    }
+    controller.enqueue(value);
+  }
 }
 
 async function resolveManualCode(
@@ -462,7 +627,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       getApiKey: (cred) => cred.access,
       login: loginBerget,
       name: 'Berget AI',
-      refreshToken: refreshBergetToken,
+      refreshToken: async (credentials: OAuthCredentials): Promise<OAuthCredentials> => {
+        const result = await refreshBergetAuthToken(credentials.access);
+        return result?.newCredentials ?? credentials;
+      },
     },
   });
 }
