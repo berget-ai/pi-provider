@@ -335,6 +335,36 @@ function getInferenceUrl(): string {
 
 // === OAuth ===
 
+async function handleAuthErrorAndRetry(
+  request: Request,
+  apiKey: string,
+  streamFn: (request: Request, apiKey: string) => Promise<Response>,
+): Promise<null | Response> {
+  const refreshResult = await refreshBergetAuthToken(apiKey);
+  if (!refreshResult) {
+    return null;
+  }
+
+  const retryResponse = await streamFn(request, refreshResult.apiKey);
+  const retryReader = retryResponse.body?.getReader();
+
+  if (!retryReader) {
+    return retryResponse;
+  }
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      await readStreamToController(retryReader, controller);
+    },
+  });
+
+  return new Response(stream, {
+    headers: retryResponse.headers,
+    status: retryResponse.status,
+    statusText: retryResponse.statusText,
+  });
+}
+
 function handleOAuthRequest(
   request: http.IncomingMessage,
   res: http.ServerResponse,
@@ -390,6 +420,8 @@ function isAuthenticationError(chunk: Uint8Array): boolean {
   );
 }
 
+// === PKCE Helpers ===
+
 function oauthResponseHtml(success: boolean, message: string): string {
   const color = success ? '#4ade80' : '#f87171';
   const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
@@ -399,8 +431,6 @@ function oauthResponseHtml(success: boolean, message: string): string {
     : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${message}</p><div class="brand">BERGET</div></div></body></html>`;
 }
-
-// === PKCE Helpers ===
 
 function parseCodeFromInput(input: string): string {
   try {
@@ -436,30 +466,19 @@ async function processStreamWithRetry(
 
           if (done) {
             controller.close();
-            break;
+            return;
           }
 
           if (!pushedAny && attempt === 0 && isAuthenticationError(value)) {
-            const refreshResult = await refreshBergetAuthToken(apiKey);
+            const retryResponse = await handleAuthErrorAndRetry(request, apiKey, streamFn);
 
-            if (refreshResult) {
-              const retryResponse = await streamFn(request, refreshResult.apiKey);
+            if (retryResponse) {
               const retryReader = retryResponse.body?.getReader();
-
               if (retryReader) {
-                while (true) {
-                  const { done: retryDone, value: retryValue } = await retryReader.read();
-
-                  if (retryDone) {
-                    controller.close();
-                    break;
-                  }
-
-                  controller.enqueue(retryValue);
-                }
+                await readStreamToController(retryReader, controller);
               }
-              return;
             }
+            return;
           }
 
           controller.enqueue(value);
@@ -476,6 +495,20 @@ async function processStreamWithRetry(
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+async function readStreamToController(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: ReadableStreamDefaultController,
+): Promise<void> {
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      controller.close();
+      return;
+    }
+    controller.enqueue(value);
+  }
 }
 
 async function resolveManualCode(
