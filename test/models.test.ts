@@ -192,4 +192,21 @@ describe('Model Fetching & Mapping', () => {
     expect(result.cost.output).toBe(5);
     expect(result.cost.cacheRead).toBe(0);
   });
+
+  test('mapModelToProviderConfig applies vision and reasoning override for moonshotai/Kimi-K2.6', () => {
+    const apiModel = {
+      contextWindow: 256_000,
+      id: 'moonshotai/Kimi-K2.6',
+      inputPricePerToken: 0.000_000_2,
+      outputPricePerToken: 0.000_000_8,
+    };
+
+    const result = mapModelToProviderConfig(apiModel);
+
+    expect(result.input).toEqual(['text', 'image']);
+    expect(result.reasoning).toBe(true);
+    expect(result.contextWindow).toBe(256_000);
+    expect(result.cost.input).toBeCloseTo(0.2);
+    expect(result.cost.output).toBeCloseTo(0.8);
+  });
 });
