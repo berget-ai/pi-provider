@@ -40,6 +40,10 @@ const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
     input: ['text', 'image'],
     reasoning: false,
   },
+  'moonshotai/Kimi-K2.6': {
+    input: ['text', 'image'],
+    reasoning: true,
+  },
   'openai/gpt-oss-120b': {
     reasoning: true,
   },
