@@ -44,12 +44,13 @@ describe('Security hardening & input validation', () => {
     expect(url).toContain('redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback');
   });
 
-  // --- Issue 7: PKCE verifier uses more than minimum bytes ---
+  // --- Issue 7: PKCE verifier is spec-compliant ---
 
-  test('generatePKCE produces verifier with at least 128 random bytes', async () => {
+  test('generatePKCE produces a verifier within the RFC 7636 length limits', async () => {
     const { verifier } = await generatePKCE();
-    // 128 random bytes → base64url ≈ 171 chars (256 bits → 43 chars min)
-    expect(verifier.length).toBeGreaterThanOrEqual(170);
+    // RFC 7636 requires code_verifier length between 43 and 128 characters.
+    // 96 random bytes → base64url is 128 chars, the maximum allowed length.
+    expect(verifier.length).toBe(128);
   });
 
   // --- Issue 11: fetchBergetModels response validation ---

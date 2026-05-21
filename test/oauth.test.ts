@@ -2,7 +2,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-a
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { loginBerget, refreshBergetToken, resolveInputUrl } from '../index';
+import { generatePKCE, loginBerget, refreshBergetToken, resolveInputUrl } from '../index';
 
 async function hitCallback(authUrl: string): Promise<void> {
   const urlObject = new URL(authUrl);
@@ -51,6 +51,17 @@ describe('OAuth & Token Refresh', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     process.env = originalEnvironment;
+  });
+
+  test('generatePKCE() creates a spec-compliant code verifier', async () => {
+    const { challenge, verifier } = await generatePKCE();
+
+    expect(verifier.length).toBeGreaterThanOrEqual(43);
+    expect(verifier.length).toBeLessThanOrEqual(128);
+    expect(verifier).toMatch(/^[\w-]+$/);
+    expect(challenge.length).toBeGreaterThanOrEqual(43);
+    expect(challenge.length).toBeLessThanOrEqual(128);
+    expect(challenge).toMatch(/^[\w-]+$/);
   });
 
   test('login() starts callback server and generates correct PKCE auth URL', async () => {

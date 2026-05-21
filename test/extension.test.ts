@@ -92,6 +92,46 @@ describe('Extension Entry Point', () => {
     expect(capturedConfig!.oauth!.getApiKey(cred)).toBe('my-access-token');
   });
 
+  test('oauth.refreshToken refreshes the credentials it receives', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    let capturedBody: null | string = null;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/v1/models/chat')) {
+        return Response.json({ models: [] }, { headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/v1/auth/refresh')) {
+        capturedBody = String(init?.body ?? '');
+        return Response.json(
+          { expires_in: 300, refresh_token: 'new-refresh-token', token: 'new-access-token' },
+          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        );
+      }
+      return new Response('Not found', { status: 404 });
+    };
+
+    let capturedConfig: null | ProviderConfig = null;
+    const mockPi = {
+      registerProvider: (_name: string, config: ProviderConfig): void => {
+        capturedConfig = config;
+      },
+    };
+
+    const { default: extension } = await import('../index');
+    await extension(mockPi as ExtensionAPI);
+
+    const refreshed = await capturedConfig!.oauth!.refreshToken({
+      access: 'old-access-token',
+      expires: Date.now() - 1000,
+      refresh: 'old-refresh-token',
+    });
+
+    expect(capturedBody).toContain('old-refresh-token');
+    expect(refreshed.access).toBe('new-access-token');
+    expect(refreshed.refresh).toBe('new-refresh-token');
+  });
+
   test('extension throws if model fetch fails (does not register)', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
