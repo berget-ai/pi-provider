@@ -141,6 +141,39 @@ export function escapeHtml(s: string): string {
     .replaceAll('"', '&quot;');
 }
 
+export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
+  const authBaseUrl = getAuthUrl();
+  const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
+    body: new URLSearchParams({
+      client_id: KEYCLOAK_CLIENT_ID,
+      code,
+      code_verifier: verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+    }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
+  });
+
+  if (!tokenResponse.ok) {
+    const errorBody = await tokenResponse.text();
+    throw new Error(`Token exchange failed: ${tokenResponse.status} ${errorBody}`);
+  }
+
+  const tokenData = await tokenResponse.json();
+  if (!isKeycloakTokenResponse(tokenData)) {
+    throw new Error(
+      'Invalid token response: expected { access_token: string, expires_in: number, refresh_token: string }',
+    );
+  }
+
+  return {
+    access: tokenData.access_token,
+    expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+    refresh: tokenData.refresh_token,
+  };
+}
+
 export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
@@ -261,6 +294,10 @@ export async function readStreamToController(
   }
 }
 
+// === OAuth ===
+
+// === Callback Server ===
+
 export async function refreshBergetAuthToken(
   apiKey: string,
 ): Promise<null | { apiKey: string; newCredentials: OAuthCredentials }> {
@@ -293,11 +330,12 @@ export async function refreshBergetAuthToken(
     throw new Error(`Token refresh failed: ${response.status} ${errorText}`);
   }
 
-  const data = (await response.json()) as {
-    expires_in: number;
-    refresh_token?: string;
-    token: string;
-  };
+  const data = await response.json();
+  if (!isBergetTokenResponse(data)) {
+    throw new Error(
+      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
+    );
+  }
 
   const newCredentials: OAuthCredentials = {
     access: data.token,
@@ -309,10 +347,6 @@ export async function refreshBergetAuthToken(
 
   return { apiKey: newCredentials.access, newCredentials };
 }
-
-// === OAuth ===
-
-// === Callback Server ===
 
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
   const apiUrl = getApiUrl();
@@ -329,11 +363,12 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     throw new Error(`Token refresh failed: ${response.status} ${errorText}`);
   }
 
-  const data = (await response.json()) as {
-    expires_in: number;
-    refresh_token?: string;
-    token: string;
-  };
+  const data = await response.json();
+  if (!isBergetTokenResponse(data)) {
+    throw new Error(
+      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
+    );
+  }
 
   return {
     access: data.token,
@@ -347,6 +382,8 @@ export function resolveInputUrl(input: RequestInfo | URL): string {
   if (input instanceof URL) return input.toString();
   return input.url;
 }
+
+// === OAuth ===
 
 export async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
@@ -392,8 +429,6 @@ export async function resolveManualCode(
 
   return manualInput ? parseCodeFromInput(manualInput) : null;
 }
-
-// === OAuth ===
 
 export function startCallbackServer(expectedState: string): Promise<{
   cancelWait: () => void;
@@ -472,40 +507,6 @@ function base64URLEncode(buffer: ArrayBuffer): string {
   return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
 }
 
-async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
-  const authBaseUrl = getAuthUrl();
-  const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
-    body: new URLSearchParams({
-      client_id: KEYCLOAK_CLIENT_ID,
-      code,
-      code_verifier: verifier,
-      grant_type: 'authorization_code',
-      redirect_uri: REDIRECT_URI,
-    }),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    method: 'POST',
-  });
-
-  if (!tokenResponse.ok) {
-    const errorBody = await tokenResponse.text();
-    throw new Error(`Token exchange failed: ${tokenResponse.status} ${errorBody}`);
-  }
-
-  const tokenData = (await tokenResponse.json()) as {
-    access_token: string;
-    expires_in: number;
-    refresh_token: string;
-  };
-
-  return {
-    access: tokenData.access_token,
-    expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
-    refresh: tokenData.refresh_token,
-  };
-}
-
-// === PKCE Helpers ===
-
 function generateRandomString(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
@@ -515,6 +516,8 @@ function generateRandomString(): string {
 function getApiUrl(): string {
   return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
+
+// === PKCE Helpers ===
 
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
@@ -567,6 +570,34 @@ function handleOAuthRequest(
     res.writeHead(500, { Connection: 'close', 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Internal error');
   }
+}
+
+function isBergetTokenResponse(
+  data: unknown,
+): data is { expires_in: number; refresh_token?: string; token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'token' in data &&
+    typeof (data as Record<string, unknown>).token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number'
+  );
+}
+
+function isKeycloakTokenResponse(
+  data: unknown,
+): data is { access_token: string; expires_in: number; refresh_token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'access_token' in data &&
+    typeof (data as Record<string, unknown>).access_token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number' &&
+    'refresh_token' in data &&
+    typeof (data as Record<string, unknown>).refresh_token === 'string'
+  );
 }
 
 function parseCodeFromInput(input: string): string {
