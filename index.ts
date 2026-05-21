@@ -70,6 +70,50 @@ interface CallbackResult {
   state: string;
 }
 
+export async function _collectAuthCode(
+  callbacks: OAuthLoginCallbacks,
+  authUrl: string,
+  state: string,
+  serverFactory: typeof startCallbackServer,
+): Promise<null | string> {
+  let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | null = null;
+
+  try {
+    callbackServer = await serverFactory(state);
+
+    await callbacks.onAuth({
+      instructions:
+        'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
+      url: authUrl,
+    });
+
+    let code: null | string = null;
+    if (callbacks.onManualCodeInput) {
+      code = await resolveManualCode(callbackServer, callbacks);
+    } else {
+      const result = await callbackServer.waitForCode();
+      code = result?.code ?? null;
+    }
+
+    if (code) return code;
+  } finally {
+    callbackServer?.close();
+  }
+
+  return callbacks.onPrompt({
+    message: 'Enter the authorization code from the callback URL',
+    placeholder: 'Authorization code',
+  });
+}
+
+export async function collectAuthCode(
+  callbacks: OAuthLoginCallbacks,
+  authUrl: string,
+  state: string,
+): Promise<null | string> {
+  return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
+}
+
 export function createStreamInterceptor(
   streamFn: (request: Request, apiKey: string) => Promise<Response>,
 ): (request: Request, apiKey: string) => Promise<Response> {
@@ -87,6 +131,8 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   return data.models.map((model) => mapModelToProviderConfig(model));
 }
 
+// === Model Fetching & Mapping ===
+
 export async function handleAuthErrorAndRetry(
   request: Request,
   apiKey: string,
@@ -100,8 +146,6 @@ export async function handleAuthErrorAndRetry(
   const retryResponse = await streamFn(request, refreshResult.apiKey);
   return retryResponse;
 }
-
-// === Model Fetching & Mapping ===
 
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { challenge, verifier } = await generatePKCE();
@@ -244,6 +288,119 @@ export function resolveInputUrl(input: RequestInfo | URL): string {
   return input.url;
 }
 
+export async function resolveManualCode(
+  callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
+  callbacks: OAuthLoginCallbacks,
+): Promise<null | string> {
+  if (!callbacks.onManualCodeInput) return null;
+
+  let manualInput: string | undefined;
+  let manualError: Error | undefined;
+
+  const manualPromise = callbacks
+    .onManualCodeInput()
+    .then((input) => {
+      manualInput = input;
+      callbackServer.cancelWait();
+      return input;
+    })
+    .catch((error) => {
+      manualError = error instanceof Error ? error : new Error(String(error));
+      callbackServer.cancelWait();
+    });
+
+  const result = await callbackServer.waitForCode();
+
+  if (result?.code) return result.code;
+  if (manualInput) return parseCodeFromInput(manualInput);
+
+  const timeoutPromise = new Promise<null>((resolve) => {
+    setTimeout(() => {
+      callbackServer.cancelWait();
+      resolve(null);
+    }, OAUTH_TIMEOUT_MS());
+  });
+
+  const winner = await Promise.race([manualPromise, timeoutPromise]);
+
+  if (winner === null) {
+    // Timeout — fall through to onPrompt in collectAuthCode
+    return null;
+  }
+
+  if (manualError) throw manualError;
+
+  return manualInput ? parseCodeFromInput(manualInput) : null;
+}
+
+export function startCallbackServer(expectedState: string): Promise<{
+  cancelWait: () => void;
+  close: () => void;
+  server: http.Server;
+  waitForCode: () => Promise<CallbackResult | null>;
+}> {
+  return new Promise((resolve, reject) => {
+    let settleWait: ((value: CallbackResult | null) => void) | null = null;
+    let settled = false;
+
+    const activeSockets = new Set<Socket>();
+
+    const waitForCodePromise = new Promise<CallbackResult | null>((resolve) => {
+      settleWait = (value: CallbackResult | null): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+    });
+
+    const server = http.createServer((request, res) => {
+      if (settleWait) {
+        handleOAuthRequest(request, res, expectedState, settleWait);
+      }
+    });
+
+    server.on('connection', (socket: Socket) => {
+      activeSockets.add(socket);
+      socket.once('close', () => activeSockets.delete(socket));
+    });
+
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        reject(
+          new Error(
+            `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`,
+          ),
+        );
+      } else {
+        reject(error);
+      }
+    });
+
+    server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
+      const timeout = setTimeout(() => {
+        settleWait?.(null);
+      }, OAUTH_TIMEOUT_MS());
+
+      resolve({
+        cancelWait: () => {
+          clearTimeout(timeout);
+          settleWait?.(null);
+        },
+        close: () => {
+          clearTimeout(timeout);
+          for (const socket of activeSockets) {
+            socket.destroy();
+          }
+          activeSockets.clear();
+          server.close();
+        },
+        server,
+        waitForCode: () => waitForCodePromise,
+      });
+    });
+  });
+}
+
 function base64URLEncode(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let string_ = '';
@@ -252,6 +409,10 @@ function base64URLEncode(buffer: ArrayBuffer): string {
   }
   return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
 }
+
+// === OAuth ===
+
+// === Callback Server ===
 
 function buildAuthUrl(challenge: string, state: string): string {
   const authBaseUrl = getAuthUrl();
@@ -265,43 +426,6 @@ function buildAuthUrl(challenge: string, state: string): string {
     state,
   });
   return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
-}
-
-async function collectAuthCode(
-  callbacks: OAuthLoginCallbacks,
-  authUrl: string,
-  state: string,
-): Promise<null | string> {
-  let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | null = null;
-
-  try {
-    callbackServer = await startCallbackServer(state);
-
-    callbacks.onAuth({
-      instructions:
-        'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
-      url: authUrl,
-    });
-
-    let code: null | string = null;
-    if (callbacks.onManualCodeInput) {
-      code = await resolveManualCode(callbackServer, callbacks);
-    } else {
-      const result = await callbackServer.waitForCode();
-      code = result?.code ?? null;
-    }
-
-    if (code) return code;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('EADDRINUSE')) throw error;
-  } finally {
-    callbackServer?.close();
-  }
-
-  return callbacks.onPrompt({
-    message: 'Enter the authorization code from the callback URL',
-    placeholder: 'Authorization code',
-  });
 }
 
 async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
@@ -336,10 +460,6 @@ async function exchangeToken(code: string, verifier: string): Promise<OAuthCrede
   };
 }
 
-// === OAuth ===
-
-// === Callback Server ===
-
 async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
   const verifierBytes = new Uint8Array(32);
   crypto.getRandomValues(verifierBytes);
@@ -351,6 +471,8 @@ async function generatePKCE(): Promise<{ challenge: string; verifier: string }> 
   return { challenge, verifier };
 }
 
+// === OAuth ===
+
 function generateRandomString(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
@@ -361,11 +483,11 @@ function getApiUrl(): string {
   return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
 
-// === OAuth ===
-
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
 }
+
+// === PKCE Helpers ===
 
 function getInferenceUrl(): string {
   return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
@@ -415,8 +537,6 @@ function handleOAuthRequest(
     res.end('Internal error');
   }
 }
-
-// === PKCE Helpers ===
 
 function isAuthenticationError(chunk: Uint8Array): boolean {
   const text = new TextDecoder().decode(chunk);
@@ -504,106 +624,6 @@ async function processStreamWithRetry(
     headers: response.headers,
     status: response.status,
     statusText: response.statusText,
-  });
-}
-
-async function resolveManualCode(
-  callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
-  callbacks: OAuthLoginCallbacks,
-): Promise<null | string> {
-  if (!callbacks.onManualCodeInput) return null;
-
-  let manualInput: string | undefined;
-  let manualError: Error | undefined;
-
-  const manualPromise = callbacks
-    .onManualCodeInput()
-    .then((input) => {
-      manualInput = input;
-      callbackServer.cancelWait();
-      return input;
-    })
-    .catch((error) => {
-      manualError = error instanceof Error ? error : new Error(String(error));
-      callbackServer.cancelWait();
-    });
-
-  const result = await callbackServer.waitForCode();
-
-  if (result?.code) return result.code;
-  if (manualInput) return parseCodeFromInput(manualInput);
-
-  await manualPromise;
-  if (manualError) throw manualError;
-
-  return manualInput ? parseCodeFromInput(manualInput) : null;
-}
-
-function startCallbackServer(expectedState: string): Promise<{
-  cancelWait: () => void;
-  close: () => void;
-  server: http.Server;
-  waitForCode: () => Promise<CallbackResult | null>;
-}> {
-  return new Promise((resolve, reject) => {
-    let settleWait: ((value: CallbackResult | null) => void) | null = null;
-    let settled = false;
-
-    const activeSockets = new Set<Socket>();
-
-    const waitForCodePromise = new Promise<CallbackResult | null>((resolve) => {
-      settleWait = (value: CallbackResult | null): void => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-    });
-
-    const server = http.createServer((request, res) => {
-      if (settleWait) {
-        handleOAuthRequest(request, res, expectedState, settleWait);
-      }
-    });
-
-    server.on('connection', (socket: Socket) => {
-      activeSockets.add(socket);
-      socket.once('close', () => activeSockets.delete(socket));
-    });
-
-    server.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code === 'EADDRINUSE') {
-        reject(
-          new Error(
-            `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`,
-          ),
-        );
-      } else {
-        reject(error);
-      }
-    });
-
-    server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
-      const timeout = setTimeout(() => {
-        settleWait?.(null);
-      }, OAUTH_TIMEOUT_MS());
-
-      resolve({
-        cancelWait: () => {
-          clearTimeout(timeout);
-          settleWait?.(null);
-        },
-        close: () => {
-          clearTimeout(timeout);
-          for (const socket of activeSockets) {
-            socket.destroy();
-          }
-          activeSockets.clear();
-          server.close();
-        },
-        server,
-        waitForCode: () => waitForCodePromise,
-      });
-    });
   });
 }
 
