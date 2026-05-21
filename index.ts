@@ -87,6 +87,22 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   return data.models.map((model) => mapModelToProviderConfig(model));
 }
 
+export async function handleAuthErrorAndRetry(
+  request: Request,
+  apiKey: string,
+  streamFn: (request: Request, apiKey: string) => Promise<Response>,
+): Promise<null | Response> {
+  const refreshResult = await refreshBergetAuthToken(apiKey);
+  if (!refreshResult) {
+    return null;
+  }
+
+  const retryResponse = await streamFn(request, refreshResult.apiKey);
+  return retryResponse;
+}
+
+// === Model Fetching & Mapping ===
+
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { challenge, verifier } = await generatePKCE();
   const state = generateRandomString();
@@ -103,8 +119,6 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
 
   return exchangeToken(code, verifier);
 }
-
-// === Model Fetching & Mapping ===
 
 export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
   const base: ProviderModelConfig = {
@@ -127,6 +141,24 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
 
   const override = MODEL_OVERRIDES[model.id];
   return override ? { ...base, ...override } : base;
+}
+
+export async function readStreamToController(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+): Promise<void> {
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    }
+  } catch (error) {
+    controller.error(error);
+  }
 }
 
 export async function refreshBergetAuthToken(
@@ -304,6 +336,10 @@ async function exchangeToken(code: string, verifier: string): Promise<OAuthCrede
   };
 }
 
+// === OAuth ===
+
+// === Callback Server ===
+
 async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
   const verifierBytes = new Uint8Array(32);
   crypto.getRandomValues(verifierBytes);
@@ -321,13 +357,11 @@ function generateRandomString(): string {
   return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// === OAuth ===
-
-// === Callback Server ===
-
 function getApiUrl(): string {
   return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
+
+// === OAuth ===
 
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
@@ -335,38 +369,6 @@ function getAuthUrl(): string {
 
 function getInferenceUrl(): string {
   return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
-}
-
-// === OAuth ===
-
-async function handleAuthErrorAndRetry(
-  request: Request,
-  apiKey: string,
-  streamFn: (request: Request, apiKey: string) => Promise<Response>,
-): Promise<null | Response> {
-  const refreshResult = await refreshBergetAuthToken(apiKey);
-  if (!refreshResult) {
-    return null;
-  }
-
-  const retryResponse = await streamFn(request, refreshResult.apiKey);
-  const retryReader = retryResponse.body?.getReader();
-
-  if (!retryReader) {
-    return retryResponse;
-  }
-
-  const stream = new ReadableStream({
-    async start(controller) {
-      await readStreamToController(retryReader, controller);
-    },
-  });
-
-  return new Response(stream, {
-    headers: retryResponse.headers,
-    status: retryResponse.status,
-    statusText: retryResponse.statusText,
-  });
 }
 
 function handleOAuthRequest(
@@ -414,6 +416,8 @@ function handleOAuthRequest(
   }
 }
 
+// === PKCE Helpers ===
+
 function isAuthenticationError(chunk: Uint8Array): boolean {
   const text = new TextDecoder().decode(chunk);
   return (
@@ -423,8 +427,6 @@ function isAuthenticationError(chunk: Uint8Array): boolean {
     text.includes('Invalid token')
   );
 }
-
-// === PKCE Helpers ===
 
 function oauthResponseHtml(success: boolean, message: string): string {
   const color = success ? '#4ade80' : '#f87171';
@@ -476,11 +478,15 @@ async function processStreamWithRetry(
           if (!pushedAny && attempt === 0 && isAuthenticationError(value)) {
             const retryResponse = await handleAuthErrorAndRetry(request, apiKey, streamFn);
 
-            if (retryResponse) {
-              const retryReader = retryResponse.body?.getReader();
-              if (retryReader) {
-                await readStreamToController(retryReader, controller);
-              }
+            if (retryResponse?.body) {
+              await reader.cancel().catch(() => {});
+              const retryReader = retryResponse.body.getReader();
+              await readStreamToController(retryReader, controller);
+              controller.close();
+            } else {
+              await reader.cancel().catch(() => {});
+              const decoded = new TextDecoder().decode(value);
+              controller.error(new Error(`Authentication failed: ${decoded.slice(0, 500)}`));
             }
             return;
           }
@@ -499,20 +505,6 @@ async function processStreamWithRetry(
     status: response.status,
     statusText: response.statusText,
   });
-}
-
-async function readStreamToController(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  controller: ReadableStreamDefaultController,
-): Promise<void> {
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      controller.close();
-      return;
-    }
-    controller.enqueue(value);
-  }
 }
 
 async function resolveManualCode(
