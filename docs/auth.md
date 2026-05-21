@@ -4,12 +4,12 @@
 
 ### Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BERGET_AUTH_URL` | `https://keycloak.berget.ai` | Keycloak base URL |
-| `BERGET_API_URL` | `https://api.berget.ai` | Berget API base URL |
-| `BERGET_INFERENCE_URL` | `https://api.berget.ai/v1` | OpenAI-compatible inference endpoint |
-| `BERGET_OAUTH_TIMEOUT_MS` | `300000` (5 min) | Callback server & manual-input timeout |
+| Variable                  | Default                      | Description                            |
+| ------------------------- | ---------------------------- | -------------------------------------- |
+| `BERGET_AUTH_URL`         | `https://keycloak.berget.ai` | Keycloak base URL                      |
+| `BERGET_API_URL`          | `https://api.berget.ai`      | Berget API base URL                    |
+| `BERGET_INFERENCE_URL`    | `https://api.berget.ai/v1`   | OpenAI-compatible inference endpoint   |
+| `BERGET_OAUTH_TIMEOUT_MS` | `300000` (5 min)             | Callback server & manual-input timeout |
 
 ### Authorization Code Flow
 
@@ -32,13 +32,13 @@
 
 ## Error Reference
 
-| Error | Cause | Resolution |
-|-------|-------|------------|
-| `Port 8787 is already in use` | Another process holds the callback port | Close the conflicting app or wait until the previous OAuth flow completes |
-| `Manual code input timed out` | `onManualCodeInput()` callback never resolved | Ensure the UI dialog resolves or rejects, or use the `onPrompt` fallback |
-| `Authentication failed: ...` | Auth error in stream chunk and no refresh token available | Re-run OAuth login — the stored credentials may be expired or missing |
-| `Invalid token response: ...` | Server returned unexpected JSON during token exchange or refresh | Check network/proxy; report to Berget if persistent |
-| `Malformed model list response: ...` | `/v1/models/chat` returned non-array `models` or invalid JSON | Check `BERGET_API_URL`; may indicate API maintenance or outage |
+| Error                                | Cause                                                            | Resolution                                                                |
+| ------------------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `Port 8787 is already in use`        | Another process holds the callback port                          | Close the conflicting app or wait until the previous OAuth flow completes |
+| `Manual code input timed out`        | `onManualCodeInput()` callback never resolved                    | Ensure the UI dialog resolves or rejects, or use the `onPrompt` fallback  |
+| `Authentication failed: ...`         | Auth error in stream chunk and no refresh token available        | Re-run OAuth login — the stored credentials may be expired or missing     |
+| `Invalid token response: ...`        | Server returned unexpected JSON during token exchange or refresh | Check network/proxy; report to Berget if persistent                       |
+| `Malformed model list response: ...` | `/v1/models/chat` returned non-array `models` or invalid JSON    | Check `BERGET_API_URL`; may indicate API maintenance or outage            |
 
 ## Function Reference
 
