@@ -13,7 +13,7 @@ const KEYCLOAK_CLIENT_ID = 'berget-code';
 const CALLBACK_PORT = 8787;
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
-const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
+const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const OAUTH_TIMEOUT_MS = (): number =>
   Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
 
@@ -61,10 +61,6 @@ interface BergetModel {
   outputPricePerToken: number;
 }
 
-interface BergetModelResponse {
-  models: BergetModel[];
-}
-
 interface CallbackResult {
   code: string;
   state: string;
@@ -106,6 +102,20 @@ export async function _collectAuthCode(
   });
 }
 
+export function buildAuthUrl(challenge: string, state: string): string {
+  const authBaseUrl = getAuthUrl();
+  const parameters = new URLSearchParams({
+    client_id: KEYCLOAK_CLIENT_ID,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile offline_access',
+    state,
+  });
+  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
+}
+
 export async function collectAuthCode(
   callbacks: OAuthLoginCallbacks,
   authUrl: string,
@@ -121,17 +131,39 @@ export function createStreamInterceptor(
     processStreamWithRetry(request, apiKey, streamFn, 0);
 }
 
+// === Model Fetching & Mapping ===
+
+export function escapeHtml(s: string): string {
+  return s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
 export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
   if (!response.ok) {
     throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
   }
-  const data = (await response.json()) as BergetModelResponse;
-  return data.models.map((model) => mapModelToProviderConfig(model));
+  const data = await response.json();
+  if (!data || typeof data !== 'object' || !Array.isArray(data.models)) {
+    throw new Error('Malformed model list response: expected { models: [...] }');
+  }
+  return (data.models as BergetModel[]).map((model) => mapModelToProviderConfig(model));
 }
 
-// === Model Fetching & Mapping ===
+export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
+  const verifierBytes = new Uint8Array(128);
+  crypto.getRandomValues(verifierBytes);
+  const verifier = base64URLEncode(verifierBytes.buffer as ArrayBuffer);
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = base64URLEncode(digest);
+  return { challenge, verifier };
+}
 
 export async function handleAuthErrorAndRetry(
   request: Request,
@@ -145,6 +177,20 @@ export async function handleAuthErrorAndRetry(
 
   const retryResponse = await streamFn(request, refreshResult.apiKey);
   return retryResponse;
+}
+
+export function isAuthenticationError(chunk: Uint8Array): boolean {
+  const text = new TextDecoder().decode(chunk);
+  // Require SSE data: framing and a specific auth-related type/message
+  const hasDataPrefix = text.startsWith('data:');
+  const hasAuthError =
+    text.includes('"type":"authentication_error"') ||
+    text.includes('"type": "authentication_error"') ||
+    text.includes('authentication_error') ||
+    text.includes('Unauthorized') ||
+    text.includes('invalid_token') ||
+    text.includes('Invalid token');
+  return hasDataPrefix && hasAuthError;
 }
 
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
@@ -185,6 +231,16 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
 
   const override = MODEL_OVERRIDES[model.id];
   return override ? { ...base, ...override } : base;
+}
+
+export function oauthResponseHtml(success: boolean, message: string): string {
+  const color = success ? '#4ade80' : '#f87171';
+  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
+  const title = success ? 'Authentication Successful' : 'Authentication Failed';
+  const icon = success
+    ? `<polyline points="20 6 9 17 4 12"/>`
+    : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
 export async function readStreamToController(
@@ -253,6 +309,10 @@ export async function refreshBergetAuthToken(
 
   return { apiKey: newCredentials.access, newCredentials };
 }
+
+// === OAuth ===
+
+// === Callback Server ===
 
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
   const apiUrl = getApiUrl();
@@ -333,6 +393,8 @@ export async function resolveManualCode(
   return manualInput ? parseCodeFromInput(manualInput) : null;
 }
 
+// === OAuth ===
+
 export function startCallbackServer(expectedState: string): Promise<{
   cancelWait: () => void;
   close: () => void;
@@ -410,24 +472,6 @@ function base64URLEncode(buffer: ArrayBuffer): string {
   return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
 }
 
-// === OAuth ===
-
-// === Callback Server ===
-
-function buildAuthUrl(challenge: string, state: string): string {
-  const authBaseUrl = getAuthUrl();
-  const parameters = new URLSearchParams({
-    client_id: KEYCLOAK_CLIENT_ID,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    redirect_uri: REDIRECT_URI,
-    response_type: 'code',
-    scope: 'openid email profile offline_access',
-    state,
-  });
-  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
-}
-
 async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
   const authBaseUrl = getAuthUrl();
   const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
@@ -460,18 +504,7 @@ async function exchangeToken(code: string, verifier: string): Promise<OAuthCrede
   };
 }
 
-async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
-  const verifierBytes = new Uint8Array(32);
-  crypto.getRandomValues(verifierBytes);
-  const verifier = base64URLEncode(verifierBytes.buffer as ArrayBuffer);
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const challenge = base64URLEncode(digest);
-  return { challenge, verifier };
-}
-
-// === OAuth ===
+// === PKCE Helpers ===
 
 function generateRandomString(): string {
   const array = new Uint8Array(32);
@@ -486,8 +519,6 @@ function getApiUrl(): string {
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
 }
-
-// === PKCE Helpers ===
 
 function getInferenceUrl(): string {
   return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
@@ -536,26 +567,6 @@ function handleOAuthRequest(
     res.writeHead(500, { Connection: 'close', 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Internal error');
   }
-}
-
-function isAuthenticationError(chunk: Uint8Array): boolean {
-  const text = new TextDecoder().decode(chunk);
-  return (
-    text.includes('401') ||
-    text.includes('Unauthorized') ||
-    text.includes('invalid_token') ||
-    text.includes('Invalid token')
-  );
-}
-
-function oauthResponseHtml(success: boolean, message: string): string {
-  const color = success ? '#4ade80' : '#f87171';
-  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
-  const title = success ? 'Authentication Successful' : 'Authentication Failed';
-  const icon = success
-    ? `<polyline points="20 6 9 17 4 12"/>`
-    : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${message}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
 function parseCodeFromInput(input: string): string {

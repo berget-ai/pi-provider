@@ -81,7 +81,7 @@ describe('OAuth & Token Refresh', () => {
     );
     expect(authUrl).toContain('client_id=berget-code');
     expect(authUrl).toContain('response_type=code');
-    expect(authUrl).toContain('redirect_uri=http%3A%2F%2Flocalhost%3A8787%2Fcallback');
+    expect(authUrl).toContain('redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback');
     expect(authUrl).toContain('scope=openid');
     expect(authUrl).toContain('code_challenge_method=S256');
   });
