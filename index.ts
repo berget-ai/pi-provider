@@ -188,7 +188,7 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
 }
 
 export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
-  const verifierBytes = new Uint8Array(128);
+  const verifierBytes = new Uint8Array(96);
   crypto.getRandomValues(verifierBytes);
   const verifier = base64URLEncode(verifierBytes.buffer as ArrayBuffer);
   const encoder = new TextEncoder();
@@ -685,10 +685,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       getApiKey: (cred) => cred.access,
       login: loginBerget,
       name: 'Berget AI',
-      refreshToken: async (credentials: OAuthCredentials): Promise<OAuthCredentials> => {
-        const result = await refreshBergetAuthToken(credentials.access);
-        return result?.newCredentials ?? credentials;
-      },
+      refreshToken: refreshBergetToken,
     },
   });
 }
