@@ -676,7 +676,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   pi.registerProvider('berget', {
     api: 'openai-completions',
-    apiKey: 'BERGET_API_KEY',
+    apiKey: '$BERGET_API_KEY',
     authHeader: true,
     baseUrl: getInferenceUrl(),
     models,
