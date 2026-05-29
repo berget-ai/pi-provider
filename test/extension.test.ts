@@ -53,7 +53,7 @@ describe('Extension Entry Point', () => {
     expect(capturedConfig!.name).toBe('Berget AI');
     expect(capturedConfig!.baseUrl).toBe('https://test-inference.berget.ai');
     expect(capturedConfig!.api).toBe('openai-completions');
-    expect(capturedConfig!.apiKey).toBe('BERGET_API_KEY');
+    expect(capturedConfig!.apiKey).toBe('$BERGET_API_KEY');
     expect(capturedConfig!.models).toHaveLength(1);
     expect(capturedConfig!.models![0].id).toBe('meta-llama/Llama-3.3-70B-Instruct');
     expect(capturedConfig!.models![0].compat).toEqual({ supportsDeveloperRole: false });

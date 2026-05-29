@@ -50,7 +50,7 @@ The extension calls `pi.registerProvider("berget", ...)` with:
 
 - `api`: `"openai-completions"` for OpenAI-compatible streaming
 - `baseUrl`: the Berget inference API endpoint
-- `apiKey`: `"BERGET_API_KEY"` (the environment variable name, not a literal key)
+- `apiKey`: `"$BERGET_API_KEY"` (the environment variable name, not a literal key)
 - `oauth`: configuration for `/login` browser-based authentication
 
 ### 4. OAuth implementation
