@@ -1,4 +1,5 @@
 import vitest from '@vitest/eslint-plugin';
+import eslintConfigPrettier from 'eslint-config-prettier';
 import perfectionist from 'eslint-plugin-perfectionist';
 import prettier from 'eslint-plugin-prettier';
 import pluginPromise from 'eslint-plugin-promise';
@@ -6,7 +7,7 @@ import sonarjs from 'eslint-plugin-sonarjs';
 import unicorn from 'eslint-plugin-unicorn';
 import tseslint from 'typescript-eslint';
 
-export default [
+export default tseslint.config(
   {
     ignores: [
       'node_modules/**',
@@ -67,4 +68,5 @@ export default [
       },
     },
   },
-];
+  eslintConfigPrettier,
+);
