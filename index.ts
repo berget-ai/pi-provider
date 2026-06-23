@@ -50,6 +50,9 @@ const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
   'zai-org/GLM-4.7-FP8': {
     reasoning: true,
   },
+  'zai-org/GLM-5.2': {
+    reasoning: true,
+  },
 };
 
 // === URL Helpers ===
