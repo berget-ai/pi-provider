@@ -215,8 +215,9 @@ describe('Stream Interceptor', () => {
     let errorCalled = false;
     let errorArg: unknown;
 
+    const closeFn = vi.fn();
     const controller = {
-      close: vi.fn(),
+      close: closeFn,
       enqueue: vi.fn().mockImplementation(() => {
         throw new Error('backpressure error');
       }),
@@ -231,7 +232,7 @@ describe('Stream Interceptor', () => {
     expect(errorCalled).toBe(true);
     expect(errorArg).toBeInstanceOf(Error);
     expect((errorArg as Error).message).toBe('backpressure error');
-    expect(controller.close).not.toHaveBeenCalled();
+    expect(closeFn).not.toHaveBeenCalled();
   });
 
   test('readStreamToController closes controller normally when stream ends', async () => {
@@ -244,17 +245,20 @@ describe('Stream Interceptor', () => {
 
     const reader = sourceStream.getReader();
 
+    const enqueueFn = vi.fn();
+    const closeFn = vi.fn();
+    const errorFn = vi.fn();
     const controller = {
-      close: vi.fn(),
-      enqueue: vi.fn(),
-      error: vi.fn(),
+      close: closeFn,
+      enqueue: enqueueFn,
+      error: errorFn,
     } as unknown as ReadableStreamDefaultController<Uint8Array>;
 
     await readStreamToController(reader, controller);
 
-    expect(controller.enqueue).toHaveBeenCalledTimes(1);
-    expect(controller.close).toHaveBeenCalledTimes(1);
-    expect(controller.error).not.toHaveBeenCalled();
+    expect(enqueueFn).toHaveBeenCalledTimes(1);
+    expect(closeFn).toHaveBeenCalledTimes(1);
+    expect(errorFn).not.toHaveBeenCalled();
   });
 
   // --- Issue B simplification: handleAuthErrorAndRetry returns raw response ---
@@ -400,7 +404,7 @@ async function readAllChunks(
   reader: ReadableStreamDefaultReader<Uint8Array>,
 ): Promise<Uint8Array[]> {
   const chunks: Uint8Array[] = [];
-  while (true) {
+  for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);

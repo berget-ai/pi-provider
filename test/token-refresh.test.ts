@@ -36,9 +36,9 @@ function isBergetRefreshUrl(url: string): boolean {
 function parseRefreshBody(init?: RequestInit): { refresh_token: string } {
   const body = init?.body;
   const bodyString = typeof body === 'string' ? body : JSON.stringify(body ?? '');
-  const parsed = JSON.parse(bodyString);
+  const parsed = JSON.parse(bodyString) as Record<string, unknown>;
   return {
-    refresh_token: parsed.refresh_token ?? '',
+    refresh_token: typeof parsed.refresh_token === 'string' ? parsed.refresh_token : '',
   };
 }
 
@@ -60,10 +60,10 @@ describe('Token Refresh Flow - Berget API', () => {
   test('refresh sends refresh_token to Berget API endpoint', async () => {
     let capturedInit: RequestInit | undefined;
     let capturedUrl: string | undefined;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       capturedUrl = resolveInputUrl(input);
       capturedInit = init;
-      return bergetRefreshResponse('new-access', 'new-refresh', 300);
+      return Promise.resolve(bergetRefreshResponse('new-access', 'new-refresh', 300));
     };
 
     await refreshBergetToken(expiredCreds('my-refresh-token'));
@@ -77,8 +77,8 @@ describe('Token Refresh Flow - Berget API', () => {
   });
 
   test('refresh returns new access token, rotated refresh token, and correct expires', async () => {
-    globalThis.fetch = async (): Promise<Response> =>
-      bergetRefreshResponse('access-1', 'rotated-1', 300);
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(bergetRefreshResponse('access-1', 'rotated-1', 300));
 
     const beforeRefresh = Date.now();
     const result = await refreshBergetToken(expiredCreds('old-refresh'));
@@ -92,12 +92,14 @@ describe('Token Refresh Flow - Berget API', () => {
 
   test('full lifecycle: login → access expires → refresh → access expires → refresh again', async () => {
     let callCount = 0;
-    globalThis.fetch = async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
       if (!isBergetRefreshUrl(resolveInputUrl(input))) {
-        return new Response('Not found', { status: 404 });
+        return Promise.resolve(new Response('Not found', { status: 404 }));
       }
       callCount++;
-      return bergetRefreshResponse(`access-${callCount}`, `rotated-${callCount}`, 300);
+      return Promise.resolve(
+        bergetRefreshResponse(`access-${String(callCount)}`, `rotated-${String(callCount)}`, 300),
+      );
     };
 
     const creds = expiredCreds('login-refresh-token');
@@ -118,14 +120,16 @@ describe('Token Refresh Flow - Berget API', () => {
   test('each refresh sends the previous rotated refresh_token', async () => {
     const capturedTokens: string[] = [];
     let callCount = 0;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (!isBergetRefreshUrl(resolveInputUrl(input))) {
-        return new Response('Not found', { status: 404 });
+        return Promise.resolve(new Response('Not found', { status: 404 }));
       }
       callCount++;
       const body = parseRefreshBody(init);
       capturedTokens.push(body.refresh_token);
-      return bergetRefreshResponse(`access-${callCount}`, `rotated-${callCount}`, 300);
+      return Promise.resolve(
+        bergetRefreshResponse(`access-${String(callCount)}`, `rotated-${String(callCount)}`, 300),
+      );
     };
 
     const creds = expiredCreds('login-refresh-token');
@@ -139,10 +143,12 @@ describe('Token Refresh Flow - Berget API', () => {
   });
 
   test('refresh throws on 400 invalid_grant from Berget API', async () => {
-    globalThis.fetch = async (): Promise<Response> =>
-      Response.json(
-        { error: 'invalid_grant', error_description: 'Invalid refresh token' },
-        { headers: { 'Content-Type': 'application/json' }, status: 400 },
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          { error: 'invalid_grant', error_description: 'Invalid refresh token' },
+          { headers: { 'Content-Type': 'application/json' }, status: 400 },
+        ),
       );
 
     await expect(refreshBergetToken(expiredCreds('stale-token'))).rejects.toThrow(
@@ -151,7 +157,8 @@ describe('Token Refresh Flow - Berget API', () => {
   });
 
   test('refresh throws on 401 from Berget API', async () => {
-    globalThis.fetch = async (): Promise<Response> => new Response('Unauthorized', { status: 401 });
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(new Response('Unauthorized', { status: 401 }));
 
     await expect(refreshBergetToken(expiredCreds('expired-token'))).rejects.toThrow(
       'Token refresh failed: 401',
@@ -194,8 +201,8 @@ describe('Token Refresh Flow - Berget API', () => {
   });
 
   test('refresh with short expires_in from Berget API', async () => {
-    globalThis.fetch = async (): Promise<Response> =>
-      bergetRefreshResponse('access-1', 'rotated-1', 60);
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(bergetRefreshResponse('access-1', 'rotated-1', 60));
 
     const result = await refreshBergetToken(expiredCreds('old-token'));
 
@@ -207,9 +214,9 @@ describe('Token Refresh Flow - Berget API', () => {
   test('refresh uses BERGET_API_URL env var', async () => {
     process.env.BERGET_API_URL = 'https://custom-api.example.com';
     let capturedUrl: string | undefined;
-    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
       capturedUrl = resolveInputUrl(input);
-      return bergetRefreshResponse('access', 'refresh', 300);
+      return Promise.resolve(bergetRefreshResponse('access', 'refresh', 300));
     };
 
     await refreshBergetToken(expiredCreds('token'));
@@ -220,26 +227,28 @@ describe('Token Refresh Flow - Berget API', () => {
     const validTokens = new Set(['initial-refresh-token']);
     let callCount = 0;
 
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       if (!isBergetRefreshUrl(resolveInputUrl(input))) {
-        return new Response('Not found', { status: 404 });
+        return Promise.resolve(new Response('Not found', { status: 404 }));
       }
 
       callCount++;
       const body = parseRefreshBody(init);
 
       if (!validTokens.has(body.refresh_token)) {
-        return Response.json(
-          { error: 'invalid_grant', error_description: 'Token not found' },
-          { status: 400 },
+        return Promise.resolve(
+          Response.json(
+            { error: 'invalid_grant', error_description: 'Token not found' },
+            { status: 400 },
+          ),
         );
       }
 
       validTokens.delete(body.refresh_token);
-      const newToken = `rotated-${callCount}`;
+      const newToken = `rotated-${String(callCount)}`;
       validTokens.add(newToken);
 
-      return bergetRefreshResponse(`access-${callCount}`, newToken, 300);
+      return Promise.resolve(bergetRefreshResponse(`access-${String(callCount)}`, newToken, 300));
     };
 
     const creds = expiredCreds('initial-refresh-token');

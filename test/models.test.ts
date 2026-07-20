@@ -44,30 +44,32 @@ describe('Model Fetching & Mapping', () => {
   test('fetchBergetModels returns mapped models from API', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (input: RequestInfo | URL): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
       const url = resolveInputUrl(input);
       if (url.includes('/v1/models/chat')) {
-        return Response.json(
-          {
-            models: [
-              {
-                contextWindow: 128_000,
-                id: 'meta-llama/Llama-3.3-70B-Instruct',
-                inputPricePerToken: 0.000_000_3,
-                outputPricePerToken: 0.000_001_5,
-              },
-              {
-                contextWindow: 128_000,
-                id: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
-                inputPricePerToken: 0.000_000_1,
-                outputPricePerToken: 0.000_000_3,
-              },
-            ],
-          },
-          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        return Promise.resolve(
+          Response.json(
+            {
+              models: [
+                {
+                  contextWindow: 128_000,
+                  id: 'meta-llama/Llama-3.3-70B-Instruct',
+                  inputPricePerToken: 0.000_000_3,
+                  outputPricePerToken: 0.000_001_5,
+                },
+                {
+                  contextWindow: 128_000,
+                  id: 'mistralai/Mistral-Small-3.2-24B-Instruct-2506',
+                  inputPricePerToken: 0.000_000_1,
+                  outputPricePerToken: 0.000_000_3,
+                },
+              ],
+            },
+            { headers: { 'Content-Type': 'application/json' }, status: 200 },
+          ),
         );
       }
-      return new Response('Not found', { status: 404 });
+      return Promise.resolve(new Response('Not found', { status: 404 }));
     };
 
     const models = await fetchBergetModels();
@@ -86,13 +88,15 @@ describe('Model Fetching & Mapping', () => {
   test('fetchBergetModels returns empty array for empty models response', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return Response.json(
-        { models: [] },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          status: 200,
-        },
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(
+        Response.json(
+          { models: [] },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
       );
     };
 
@@ -103,8 +107,8 @@ describe('Model Fetching & Mapping', () => {
   test('fetchBergetModels throws on API failure', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return new Response('Internal Server Error', { status: 500 });
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(new Response('Internal Server Error', { status: 500 }));
     };
 
     await expect(fetchBergetModels()).rejects.toThrow('Failed to fetch models: 500');

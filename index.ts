@@ -13,7 +13,7 @@ const KEYCLOAK_CLIENT_ID = 'berget-code';
 const CALLBACK_PORT = 8787;
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
-const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
+const REDIRECT_URI = `http://127.0.0.1:${String(CALLBACK_PORT)}${CALLBACK_PATH}`;
 const OAUTH_TIMEOUT_MS = (): number =>
   Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
 
@@ -142,11 +142,15 @@ export async function _collectAuthCode(
   try {
     callbackServer = await serverFactory(state);
 
-    await callbacks.onAuth({
+    // `onAuth` is typed `void`, but provider implementations may return a Promise;
+    // awaiting via Promise.resolve preserves async-rejection propagation.
+    const authInfo = {
       instructions:
         'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
       url: authUrl,
-    });
+    };
+    // eslint-disable-next-line @typescript-eslint/no-confusing-void-expression
+    await Promise.resolve(callbacks.onAuth(authInfo));
 
     let code: null | string = null;
     if (callbacks.onManualCodeInput) {
@@ -222,10 +226,10 @@ export async function exchangeToken(code: string, verifier: string): Promise<OAu
 
   if (!tokenResponse.ok) {
     const errorBody = await tokenResponse.text();
-    throw new Error(`Token exchange failed: ${tokenResponse.status} ${errorBody}`);
+    throw new Error(`Token exchange failed: ${String(tokenResponse.status)} ${errorBody}`);
   }
 
-  const tokenData = await tokenResponse.json();
+  const tokenData: unknown = await tokenResponse.json();
   if (!isKeycloakTokenResponse(tokenData)) {
     throw new Error(
       'Invalid token response: expected { access_token: string, expires_in: number, refresh_token: string }',
@@ -243,19 +247,25 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
   if (!response.ok) {
-    throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+    throw new Error(`Failed to fetch models: ${String(response.status)} ${response.statusText}`);
   }
-  const data = await response.json();
-  if (!data || typeof data !== 'object' || !Array.isArray(data.models)) {
+  const data: unknown = await response.json();
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Array.isArray((data as Record<string, unknown>).models)
+  ) {
     throw new Error('Malformed model list response: expected { models: [...] }');
   }
-  return (data.models as BergetModel[]).map((model) => mapModelToProviderConfig(model));
+  return ((data as Record<string, unknown>).models as BergetModel[]).map((model) =>
+    mapModelToProviderConfig(model),
+  );
 }
 
 export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
   const verifierBytes = new Uint8Array(96);
   crypto.getRandomValues(verifierBytes);
-  const verifier = base64URLEncode(verifierBytes.buffer as ArrayBuffer);
+  const verifier = base64URLEncode(verifierBytes.buffer);
   const encoder = new TextEncoder();
   const data = encoder.encode(verifier);
   const digest = await crypto.subtle.digest('SHA-256', data);
@@ -327,8 +337,7 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
     reasoning: false,
   };
 
-  const override = MODEL_OVERRIDES[model.id];
-  return override ? { ...base, ...override } : base;
+  return { ...base, ...MODEL_OVERRIDES[model.id] };
 }
 
 export function oauthResponseHtml(success: boolean, message: string): string {
@@ -346,7 +355,7 @@ export async function readStreamToController(
   controller: ReadableStreamDefaultController<Uint8Array>,
 ): Promise<void> {
   try {
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) {
         controller.close();
@@ -395,10 +404,10 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Token refresh failed: ${response.status} ${errorText}`);
+    throw new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
   }
 
-  const data = await response.json();
+  const data: unknown = await response.json();
   if (!isBergetTokenResponse(data)) {
     throw new Error(
       'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
@@ -436,7 +445,7 @@ export async function resolveManualCode(
       callbackServer.cancelWait();
       return input;
     })
-    .catch((error) => {
+    .catch((error: unknown) => {
       manualError = error instanceof Error ? error : new Error(String(error));
       callbackServer.cancelWait();
     });
@@ -500,7 +509,7 @@ export function startCallbackServer(expectedState: string): Promise<{
       if (error.code === 'EADDRINUSE') {
         reject(
           new Error(
-            `Port ${CALLBACK_PORT} is already in use. Close other applications using this port.`,
+            `Port ${String(CALLBACK_PORT)} is already in use. Close other applications using this port.`,
           ),
         );
       } else {
@@ -659,12 +668,12 @@ async function processStreamWithRetry(
     return response;
   }
 
-  const stream = new ReadableStream({
+  const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let pushedAny = false;
 
       try {
-        while (true) {
+        for (;;) {
           const { done, value } = await reader.read();
 
           if (done) {

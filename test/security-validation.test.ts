@@ -58,8 +58,8 @@ describe('Security hardening & input validation', () => {
   test('fetchBergetModels throws clear error when response lacks models array', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> =>
-      Response.json({ error: 'Internal Server Error' }, { status: 200 });
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(Response.json({ error: 'Internal Server Error' }, { status: 200 }));
 
     await expect(fetchBergetModels()).rejects.toThrow(
       'Malformed model list response: expected { models: [...] }',
@@ -69,8 +69,8 @@ describe('Security hardening & input validation', () => {
   test('fetchBergetModels throws when models is not an array', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> =>
-      Response.json({ models: 'not-an-array' }, { status: 200 });
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(Response.json({ models: 'not-an-array' }, { status: 200 }));
 
     await expect(fetchBergetModels()).rejects.toThrow(
       'Malformed model list response: expected { models: [...] }',

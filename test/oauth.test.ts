@@ -24,7 +24,7 @@ function mockFetch(
     }
     if (url.includes('/openid-connect/token')) {
       const body = init?.body;
-      const bodyString = body instanceof URLSearchParams ? body.toString() : String(body ?? '');
+      const bodyString = body instanceof URLSearchParams ? body.toString() : '';
       if (overrides?.onToken) return overrides.onToken(bodyString);
       return Response.json(
         {
@@ -74,10 +74,12 @@ describe('OAuth & Token Refresh', () => {
     });
 
     const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => resolveAuthUrl(info.url),
+      onAuth: (info) => {
+        resolveAuthUrl(info.url);
+      },
       onDeviceCode: () => {},
-      onPrompt: async () => 'fallback-code',
-      onSelect: async () => '',
+      onPrompt: () => Promise.resolve('fallback-code'),
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -111,10 +113,12 @@ describe('OAuth & Token Refresh', () => {
     });
 
     const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => resolveAuthUrl(info.url),
+      onAuth: (info) => {
+        resolveAuthUrl(info.url);
+      },
       onDeviceCode: () => {},
-      onPrompt: async () => 'fallback-code',
-      onSelect: async () => '',
+      onPrompt: () => Promise.resolve('fallback-code'),
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch, {
@@ -159,12 +163,12 @@ describe('OAuth & Token Refresh', () => {
     const callbacks: OAuthLoginCallbacks = {
       onAuth: () => {},
       onDeviceCode: () => {},
-      onPrompt: async (prompt) => {
+      onPrompt: (prompt) => {
         promptCalled = true;
         expect(prompt.message).toContain('authorization code');
-        return 'fallback-code';
+        return Promise.resolve('fallback-code');
       },
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -185,10 +189,12 @@ describe('OAuth & Token Refresh', () => {
     });
 
     const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => resolveAuthUrl(info.url),
+      onAuth: (info) => {
+        resolveAuthUrl(info.url);
+      },
       onDeviceCode: () => {},
-      onPrompt: async () => 'test-auth-code',
-      onSelect: async () => '',
+      onPrompt: () => Promise.resolve('test-auth-code'),
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch, {
@@ -211,16 +217,18 @@ describe('OAuth & Token Refresh', () => {
     let manualInputCalled = false;
 
     const callbacks: OAuthLoginCallbacks = {
-      onAuth: async () => {
+      onAuth: () => {
         // auth URL resolution logic would go here
       },
       onDeviceCode: () => {},
-      onManualCodeInput: async () => {
+      onManualCodeInput: () => {
         manualInputCalled = true;
-        return 'http://localhost:8787/callback?code=manual-code&state=will-be-ignored';
+        return Promise.resolve(
+          'http://localhost:8787/callback?code=manual-code&state=will-be-ignored',
+        );
       },
-      onPrompt: async () => 'fallback-code',
-      onSelect: async () => '',
+      onPrompt: () => Promise.resolve('fallback-code'),
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -242,13 +250,15 @@ describe('OAuth & Token Refresh', () => {
     let progressMessage = '';
 
     const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => resolveAuthUrl(info.url),
+      onAuth: (info) => {
+        resolveAuthUrl(info.url);
+      },
       onDeviceCode: () => {},
       onProgress: (message) => {
         progressMessage = message;
       },
-      onPrompt: async () => 'test-auth-code',
-      onSelect: async () => '',
+      onPrompt: () => Promise.resolve('test-auth-code'),
+      onSelect: () => Promise.resolve(''),
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -268,21 +278,23 @@ describe('OAuth & Token Refresh', () => {
 
     let capturedBody: null | string = null;
 
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = resolveInputUrl(input);
       if (url.includes('/v1/auth/refresh')) {
         const body = init?.body;
         capturedBody = typeof body === 'string' ? body : JSON.stringify(body);
-        return Response.json(
-          {
-            expires_in: 300,
-            refresh_token: 'new-refresh-token',
-            token: 'new-access-token',
-          },
-          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        return Promise.resolve(
+          Response.json(
+            {
+              expires_in: 300,
+              refresh_token: 'new-refresh-token',
+              token: 'new-access-token',
+            },
+            { headers: { 'Content-Type': 'application/json' }, status: 200 },
+          ),
         );
       }
-      return new Response('Not found', { status: 404 });
+      return Promise.resolve(new Response('Not found', { status: 404 }));
     };
 
     const inputCreds: OAuthCredentials = {
@@ -306,7 +318,8 @@ describe('OAuth & Token Refresh', () => {
   test('refreshToken() throws on 401 failure', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => new Response('Unauthorized', { status: 401 });
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(new Response('Unauthorized', { status: 401 }));
 
     const inputCreds: OAuthCredentials = {
       access: 'old-access-token',
@@ -320,7 +333,7 @@ describe('OAuth & Token Refresh', () => {
   test('refreshToken() throws on network error', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
+    globalThis.fetch = (): Promise<Response> => {
       throw new Error('Network error');
     };
 
@@ -346,15 +359,17 @@ describe('OAuth & Token Refresh', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     let callCount = 0;
-    globalThis.fetch = async (): Promise<Response> => {
+    globalThis.fetch = (): Promise<Response> => {
       callCount++;
-      return Response.json(
-        {
-          expires_in: 300,
-          refresh_token: `refresh-token-${callCount}`,
-          token: `access-token-${callCount}`,
-        },
-        { headers: { 'Content-Type': 'application/json' }, status: 200 },
+      return Promise.resolve(
+        Response.json(
+          {
+            expires_in: 300,
+            refresh_token: `refresh-token-${String(callCount)}`,
+            token: `access-token-${String(callCount)}`,
+          },
+          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        ),
       );
     };
 
@@ -376,11 +391,13 @@ describe('OAuth & Token Refresh', () => {
   test('refreshToken() with non-JSON response body throws', async () => {
     process.env.BERGET_AUTH_URL = 'https://test-auth.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> =>
-      new Response('<html>Internal Server Error</html>', {
-        headers: { 'Content-Type': 'text/html' },
-        status: 200,
-      });
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        new Response('<html>Internal Server Error</html>', {
+          headers: { 'Content-Type': 'text/html' },
+          status: 200,
+        }),
+      );
 
     const inputCreds: OAuthCredentials = {
       access: 'old-access-token',

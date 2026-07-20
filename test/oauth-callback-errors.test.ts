@@ -36,7 +36,7 @@ describe('OAuth Callback Error Handling', () => {
       },
       onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     await expect(
@@ -56,7 +56,7 @@ describe('OAuth Callback Error Handling', () => {
       onAuth: vi.fn(),
       onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     await expect(
@@ -80,7 +80,7 @@ describe('OAuth Callback Error Handling', () => {
       onAuth: vi.fn().mockRejectedValue(new Error('Async auth UI failure')),
       onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     await expect(
@@ -103,7 +103,7 @@ describe('OAuth Callback Error Handling', () => {
       onDeviceCode: () => {},
       onManualCodeInput: (): Promise<string> => new Promise(() => {}),
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     process.env.BERGET_OAUTH_TIMEOUT_MS = '100';
@@ -132,7 +132,7 @@ describe('OAuth Callback Error Handling', () => {
       onDeviceCode: () => {},
       onManualCodeInput: (): Promise<string> => new Promise(() => {}),
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     process.env.BERGET_OAUTH_TIMEOUT_MS = '100';
@@ -163,7 +163,7 @@ describe('OAuth Callback Error Handling', () => {
       onAuth: vi.fn(),
       onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('prompt-code'),
-      onSelect: async () => '',
+      onSelect: () => Promise.resolve(''),
     };
 
     const code = await _collectAuthCode(

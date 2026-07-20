@@ -2,6 +2,8 @@ import type { ExtensionAPI, ProviderConfig } from '@earendil-works/pi-coding-age
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
+import { resolveInputUrl } from '../index';
+
 describe('Extension Entry Point', () => {
   let originalFetch: typeof globalThis.fetch;
   let originalEnvironment: NodeJS.ProcessEnv;
@@ -20,19 +22,21 @@ describe('Extension Entry Point', () => {
     process.env.BERGET_INFERENCE_URL = 'https://test-inference.berget.ai';
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return Response.json(
-        {
-          models: [
-            {
-              contextWindow: 128_000,
-              id: 'meta-llama/Llama-3.3-70B-Instruct',
-              inputPricePerToken: 0.000_000_3,
-              outputPricePerToken: 0.000_001_5,
-            },
-          ],
-        },
-        { headers: { 'Content-Type': 'application/json' }, status: 200 },
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                contextWindow: 128_000,
+                id: 'meta-llama/Llama-3.3-70B-Instruct',
+                inputPricePerToken: 0.000_000_3,
+                outputPricePerToken: 0.000_001_5,
+              },
+            ],
+          },
+          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        ),
       );
     };
 
@@ -59,21 +63,23 @@ describe('Extension Entry Point', () => {
     expect(capturedConfig!.models![0].compat).toEqual({ supportsDeveloperRole: false });
     expect(capturedConfig!.oauth).toBeDefined();
     expect(capturedConfig!.oauth!.name).toBe('Berget AI');
-    expect(capturedConfig!.oauth!.login).toBeTypeOf('function');
-    expect(capturedConfig!.oauth!.refreshToken).toBeTypeOf('function');
-    expect(capturedConfig!.oauth!.getApiKey).toBeTypeOf('function');
+    expect(typeof capturedConfig!.oauth!.login).toBe('function');
+    expect(typeof capturedConfig!.oauth!.refreshToken).toBe('function');
+    expect(typeof capturedConfig!.oauth!.getApiKey).toBe('function');
   });
 
   test('oauth.getApiKey returns cred.access', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return Response.json(
-        { models: [] },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          status: 200,
-        },
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(
+        Response.json(
+          { models: [] },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
       );
     };
 
@@ -96,19 +102,23 @@ describe('Extension Entry Point', () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
     let capturedBody: null | string = null;
-    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const url = typeof input === 'string' ? input : input.toString();
+    globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = resolveInputUrl(input);
       if (url.includes('/v1/models/chat')) {
-        return Response.json({ models: [] }, { headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url.includes('/v1/auth/refresh')) {
-        capturedBody = String(init?.body ?? '');
-        return Response.json(
-          { expires_in: 300, refresh_token: 'new-refresh-token', token: 'new-access-token' },
-          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        return Promise.resolve(
+          Response.json({ models: [] }, { headers: { 'Content-Type': 'application/json' } }),
         );
       }
-      return new Response('Not found', { status: 404 });
+      if (url.includes('/v1/auth/refresh')) {
+        capturedBody = typeof init?.body === 'string' ? init.body : '';
+        return Promise.resolve(
+          Response.json(
+            { expires_in: 300, refresh_token: 'new-refresh-token', token: 'new-access-token' },
+            { headers: { 'Content-Type': 'application/json' }, status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response('Not found', { status: 404 }));
     };
 
     let capturedConfig: null | ProviderConfig = null;
@@ -135,8 +145,8 @@ describe('Extension Entry Point', () => {
   test('extension throws if model fetch fails (does not register)', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return new Response('Internal Server Error', { status: 500 });
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(new Response('Internal Server Error', { status: 500 }));
     };
 
     let registerCalled = false;
@@ -156,20 +166,27 @@ describe('Extension Entry Point', () => {
   test('all models have compat.supportsDeveloperRole = false', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 
-    globalThis.fetch = async (): Promise<Response> => {
-      return Response.json(
-        {
-          models: [
-            { contextWindow: 32_000, id: 'model-a', inputPricePerToken: 0, outputPricePerToken: 0 },
-            {
-              contextWindow: 128_000,
-              id: 'model-b',
-              inputPricePerToken: 0.000_001,
-              outputPricePerToken: 0.000_003,
-            },
-          ],
-        },
-        { headers: { 'Content-Type': 'application/json' }, status: 200 },
+    globalThis.fetch = (): Promise<Response> => {
+      return Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                contextWindow: 32_000,
+                id: 'model-a',
+                inputPricePerToken: 0,
+                outputPricePerToken: 0,
+              },
+              {
+                contextWindow: 128_000,
+                id: 'model-b',
+                inputPricePerToken: 0.000_001,
+                outputPricePerToken: 0.000_003,
+              },
+            ],
+          },
+          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        ),
       );
     };
 
