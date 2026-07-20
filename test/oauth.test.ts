@@ -75,7 +75,9 @@ describe('OAuth & Token Refresh', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: (info) => resolveAuthUrl(info.url),
+      onDeviceCode: () => {},
       onPrompt: async () => 'fallback-code',
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -110,7 +112,9 @@ describe('OAuth & Token Refresh', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: (info) => resolveAuthUrl(info.url),
+      onDeviceCode: () => {},
       onPrompt: async () => 'fallback-code',
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch, {
@@ -154,11 +158,13 @@ describe('OAuth & Token Refresh', () => {
     let promptCalled = false;
     const callbacks: OAuthLoginCallbacks = {
       onAuth: () => {},
+      onDeviceCode: () => {},
       onPrompt: async (prompt) => {
         promptCalled = true;
         expect(prompt.message).toContain('authorization code');
         return 'fallback-code';
       },
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -180,7 +186,9 @@ describe('OAuth & Token Refresh', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: (info) => resolveAuthUrl(info.url),
+      onDeviceCode: () => {},
       onPrompt: async () => 'test-auth-code',
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch, {
@@ -206,11 +214,13 @@ describe('OAuth & Token Refresh', () => {
       onAuth: async () => {
         // auth URL resolution logic would go here
       },
+      onDeviceCode: () => {},
       onManualCodeInput: async () => {
         manualInputCalled = true;
         return 'http://localhost:8787/callback?code=manual-code&state=will-be-ignored';
       },
       onPrompt: async () => 'fallback-code',
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch);
@@ -233,10 +243,12 @@ describe('OAuth & Token Refresh', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: (info) => resolveAuthUrl(info.url),
+      onDeviceCode: () => {},
       onProgress: (message) => {
         progressMessage = message;
       },
       onPrompt: async () => 'test-auth-code',
+      onSelect: async () => '',
     };
 
     globalThis.fetch = mockFetch(originalFetch);
