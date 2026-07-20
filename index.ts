@@ -51,6 +51,7 @@ const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
     reasoning: true,
   },
   'zai-org/GLM-5.2': {
+    maxTokens: 32_768,
     reasoning: true,
   },
 };
