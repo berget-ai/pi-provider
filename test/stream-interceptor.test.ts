@@ -2,23 +2,23 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { createStreamInterceptor, handleAuthErrorAndRetry, readStreamToController } from '../index';
 
-// Mock AuthStorage at module level so we can control refreshBergetAuthToken paths
+// Mock ModelRuntime at module level so we can control refreshBergetAuthToken paths
 vi.mock('@earendil-works/pi-coding-agent', async () => {
   const actual = await vi.importActual<typeof import('@earendil-works/pi-coding-agent')>(
     '@earendil-works/pi-coding-agent',
   );
   return {
     ...actual,
-    AuthStorage: {
+    ModelRuntime: {
       create: vi.fn(),
     },
   };
 });
 
 // We'll need to import the mocked module later to configure it
-async function getMockAuthStorage() {
+async function getMockModelRuntime() {
   const mod = await import('@earendil-works/pi-coding-agent');
-  return mod.AuthStorage as unknown as { create: ReturnType<typeof vi.fn> };
+  return mod.ModelRuntime as unknown as { create: ReturnType<typeof vi.fn> };
 }
 
 describe('Stream Interceptor', () => {
@@ -39,11 +39,12 @@ describe('Stream Interceptor', () => {
   // --- Issue 1: Stream hang on failed auth retry ---
 
   test('stream errors (does not hang) when auth refresh returns null', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue(null),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi.fn().mockImplementation(() => Promise.resolve()),
+      });
+    }
 
     const authErrorChunk = new TextEncoder().encode(
       'data: {"error":{"message":"Invalid token","type":"authentication_error"}}\n\n',
@@ -72,16 +73,14 @@ describe('Stream Interceptor', () => {
   });
 
   test('stream errors (does not hang) when retry response has no body', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue({
-        access: 'stored-access-token',
-        expires: Date.now() + 60_000,
-        refresh: 'stored-refresh-token',
-        type: 'oauth',
-      }),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi
+          .fn()
+          .mockImplementation(() => Promise.resolve({ auth: { apiKey: 'stored-access-token' } })),
+      });
+    }
 
     const authErrorChunk = new TextEncoder().encode(
       'data: {"error":{"message":"Invalid token","type":"authentication_error"}}\n\n',
@@ -124,11 +123,12 @@ describe('Stream Interceptor', () => {
   });
 
   test('original reader is cancelled before entering retry path', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue(null),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi.fn().mockImplementation(() => Promise.resolve()),
+      });
+    }
 
     const cancelMock = vi.fn();
     const authErrorChunk = new TextEncoder().encode(
@@ -167,11 +167,12 @@ describe('Stream Interceptor', () => {
   // --- Issue 2: Auth error chunk lost on retry failure ---
 
   test('error message includes original auth error chunk when retry fails', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue(null),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi.fn().mockImplementation(() => Promise.resolve()),
+      });
+    }
 
     const authErrorText =
       'data: {"error":{"message":"Invalid token","type":"authentication_error"}}\n\n';
@@ -259,16 +260,14 @@ describe('Stream Interceptor', () => {
   // --- Issue B simplification: handleAuthErrorAndRetry returns raw response ---
 
   test('handleAuthErrorAndRetry returns raw retry response (not wrapped)', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue({
-        access: 'stored-access-token',
-        expires: Date.now() + 60_000,
-        refresh: 'stored-refresh-token',
-        type: 'oauth',
-      }),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi
+          .fn()
+          .mockImplementation(() => Promise.resolve({ auth: { apiKey: 'stored-access-token' } })),
+      });
+    }
 
     const retryResponse = new Response('retry-body', { status: 200 });
     const streamFn = vi.fn().mockResolvedValue(retryResponse);
@@ -291,16 +290,14 @@ describe('Stream Interceptor', () => {
   // --- Happy path ---
 
   test('successful retry pipes retry response body through', async () => {
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue({
-        access: 'stored-access-token',
-        expires: Date.now() + 60_000,
-        refresh: 'stored-refresh-token',
-        type: 'oauth',
-      }),
-      set: vi.fn(),
-    });
+    {
+      const ModelRuntime = await getMockModelRuntime();
+      ModelRuntime.create.mockResolvedValue({
+        getAuth: vi
+          .fn()
+          .mockImplementation(() => Promise.resolve({ auth: { apiKey: 'stored-access-token' } })),
+      });
+    }
 
     const authErrorChunk = new TextEncoder().encode(
       'data: {"error":{"message":"Invalid token","type":"authentication_error"}}\n\n',

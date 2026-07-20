@@ -10,15 +10,15 @@ vi.mock('@earendil-works/pi-coding-agent', async () => {
   );
   return {
     ...actual,
-    AuthStorage: {
+    ModelRuntime: {
       create: vi.fn(),
     },
   };
 });
 
-async function getMockAuthStorage() {
+async function getMockModelRuntime() {
   const mod = await import('@earendil-works/pi-coding-agent');
-  return mod.AuthStorage as unknown as { create: ReturnType<typeof vi.fn> };
+  return mod.ModelRuntime as unknown as { create: ReturnType<typeof vi.fn> };
 }
 
 describe('Token JSON shape validation', () => {
@@ -83,48 +83,26 @@ describe('Token JSON shape validation', () => {
     expect(creds.refresh).toBe('refresh');
   });
 
-  test('refreshBergetAuthToken throws when Berget response is missing token', async () => {
-    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
-
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue({
-        access: 'old',
-        expires: Date.now() - 1000,
-        refresh: 'refresh',
-        type: 'oauth',
-      }),
-      set: vi.fn(),
+  test('refreshBergetAuthToken returns the apiKey resolved by ModelRuntime.getAuth', async () => {
+    const ModelRuntime = await getMockModelRuntime();
+    ModelRuntime.create.mockResolvedValue({
+      getAuth: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve({ auth: { apiKey: 'resolved-access-token' } })),
     });
 
-    globalThis.fetch = async (): Promise<Response> =>
-      Response.json({ expires_in: 300, refresh_token: 'ok' }, { status: 200 });
-
-    await expect(refreshBergetAuthToken('old')).rejects.toThrow(
-      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
-    );
+    const result = await refreshBergetAuthToken('expired');
+    expect(result).toEqual({ apiKey: 'resolved-access-token' });
   });
 
-  test('refreshBergetAuthToken throws when Berget response has wrong types', async () => {
-    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
-
-    const AuthStorage = await getMockAuthStorage();
-    AuthStorage.create.mockReturnValue({
-      get: vi.fn().mockReturnValue({
-        access: 'old',
-        expires: Date.now() - 1000,
-        refresh: 'refresh',
-        type: 'oauth',
-      }),
-      set: vi.fn(),
+  test('refreshBergetAuthToken returns null when the provider has no resolved auth', async () => {
+    const ModelRuntime = await getMockModelRuntime();
+    ModelRuntime.create.mockResolvedValue({
+      getAuth: vi.fn().mockImplementation(() => Promise.resolve()),
     });
 
-    globalThis.fetch = async (): Promise<Response> =>
-      Response.json({ expires_in: 'nope', token: 123 }, { status: 200 });
-
-    await expect(refreshBergetAuthToken('old')).rejects.toThrow(
-      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
-    );
+    const result = await refreshBergetAuthToken('expired');
+    expect(result).toBeNull();
   });
 
   test('refreshBergetToken throws when Berget response is missing token', async () => {

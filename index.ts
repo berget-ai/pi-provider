@@ -2,7 +2,7 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-a
 import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
-import { AuthStorage } from '@earendil-works/pi-coding-agent';
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import * as http from 'node:http';
 
 // === Constants ===
@@ -302,54 +302,24 @@ export async function readStreamToController(
 
 // === Callback Server ===
 
+// Refreshes the stored Berget OAuth credential (expired or invalidated mid-
+// stream) via the SDK's ModelRuntime, which owns the locked read-modify-
+// write: it checks expiry, reuses an already-rotated token if another
+// process refreshed, runs the registered oauth.refreshToken (refreshBergetToken)
+// otherwise, and persists the rotated credential. Returns an apiKey for the
+// caller to retry the failed request with, or null when the provider is not
+// configured for OAuth.
 export async function refreshBergetAuthToken(
+  // The apiKey that failed authentication. Passed as a runtime override so the
+  // SDK can reuse it when still valid, mirroring the old currentAccess guard.
   apiKey: string,
-): Promise<null | { apiKey: string; newCredentials: OAuthCredentials }> {
-  const storage = AuthStorage.create();
-  const cred = storage.get('berget');
-
-  if (!cred || cred.type !== 'oauth') {
+): Promise<null | { apiKey: string }> {
+  const modelRuntime = await ModelRuntime.create();
+  const auth = await modelRuntime.getAuth('berget', { apiKey });
+  if (!auth?.auth.apiKey) {
     return null;
   }
-
-  const currentAccess = cred.access;
-
-  const now = Date.now();
-
-  if (currentAccess !== apiKey && now < cred.expires) {
-    return { apiKey: cred.access, newCredentials: cred };
-  }
-
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
-    body: JSON.stringify({
-      refresh_token: cred.refresh,
-    }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token refresh failed: ${response.status} ${errorText}`);
-  }
-
-  const data = await response.json();
-  if (!isBergetTokenResponse(data)) {
-    throw new Error(
-      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
-    );
-  }
-
-  const newCredentials: OAuthCredentials = {
-    access: data.token,
-    expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
-    refresh: data.refresh_token || cred.refresh,
-  };
-
-  storage.set('berget', { ...newCredentials, type: 'oauth' });
-
-  return { apiKey: newCredentials.access, newCredentials };
+  return { apiKey: auth.auth.apiKey };
 }
 
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {

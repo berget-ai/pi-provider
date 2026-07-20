@@ -34,7 +34,9 @@ describe('OAuth Callback Error Handling', () => {
       onAuth: () => {
         throw new Error('UI framework error displaying URL');
       },
+      onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: async () => '',
     };
 
     await expect(
@@ -52,7 +54,9 @@ describe('OAuth Callback Error Handling', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: vi.fn(),
+      onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: async () => '',
     };
 
     await expect(
@@ -74,7 +78,9 @@ describe('OAuth Callback Error Handling', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: vi.fn().mockRejectedValue(new Error('Async auth UI failure')),
+      onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: async () => '',
     };
 
     await expect(
@@ -94,8 +100,10 @@ describe('OAuth Callback Error Handling', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: vi.fn(),
+      onDeviceCode: () => {},
       onManualCodeInput: (): Promise<string> => new Promise(() => {}),
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: async () => '',
     };
 
     process.env.BERGET_OAUTH_TIMEOUT_MS = '100';
@@ -121,8 +129,10 @@ describe('OAuth Callback Error Handling', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: vi.fn(),
+      onDeviceCode: () => {},
       onManualCodeInput: (): Promise<string> => new Promise(() => {}),
       onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: async () => '',
     };
 
     process.env.BERGET_OAUTH_TIMEOUT_MS = '100';
@@ -151,7 +161,9 @@ describe('OAuth Callback Error Handling', () => {
 
     const callbacks: OAuthLoginCallbacks = {
       onAuth: vi.fn(),
+      onDeviceCode: () => {},
       onPrompt: vi.fn().mockResolvedValue('prompt-code'),
+      onSelect: async () => '',
     };
 
     const code = await _collectAuthCode(
