@@ -1,3 +1,14 @@
+/**
+ * Pi extension exposing Berget AI models as a custom provider.
+ *
+ * Exports an async factory function (the default export) that Pi awaits during
+ * startup, so model discovery and provider registration complete before the
+ * first prompt or model listing. The named exports implement the OAuth
+ * Authorization Code + PKCE login/refresh flow and the model mapping used by
+ * the entry point and the test suite.
+ *
+ * @packageDocumentation
+ */
 import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
@@ -23,6 +34,11 @@ function getOAuthTimeoutMs(): number {
 // Manual overrides for model capabilities not returned by /v1/models/chat.
 // Hugging Face model cards are the source of truth for these values.
 
+/**
+ * Manual capability overrides for models whose `/v1/models/chat` entry is
+ * wrong or incomplete. Keys are model ids; Hugging Face model cards are the
+ * source of truth for reasoning, input modalities, and `maxTokens`.
+ */
 export const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
   'google/gemma-4-31B-it': {
     input: ['text', 'image'],
@@ -135,6 +151,18 @@ interface CallbackResult {
 
 // === Model Fetching & Mapping ===
 
+/**
+ * Fetch the Berget chat model list and map each entry to a
+ * {@link ProviderModelConfig}.
+ *
+ * @remarks - `GET /v1/models/chat` against {@link getApiUrl}. Numeric fields are
+ *          coerced to 0 rather than failing — they're informational, and a bad
+ *          value must not block model selection. Entries with no valid id are
+ *          dropped, since there's no model to select without one.
+ * @throws `Failed to fetch models: <status> <statusText>` on non-2xx,
+ *         `Malformed model list response: ...` when the body isn't an object
+ *         with a `models` array.
+ */
 export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
@@ -160,6 +188,14 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
     .map((model) => mapModelToProviderConfig(model));
 }
 
+/**
+ * Map a {@link BergetModel} to Pi's {@link ProviderModelConfig}.
+ *
+ * @remarks Pricing is per-token in the API but per-million-token in Pi, so
+ *          `input`/`output` are scaled by `1e6`. Defaults to `text`-only input,
+ *          `reasoning: false`, and `DEFAULT_MAX_TOKENS`. Per-id
+ *          {@link MODEL_OVERRIDES} are spread last and win on conflict.
+ */
 export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
   const base: ProviderModelConfig = {
     compat: {
@@ -203,6 +239,17 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
 
 // === OAuth (Authorization Code + PKCE) ===
 
+/**
+ * Run the Berget OAuth 2.0 Authorization Code + PKCE login flow.
+ *
+ * Orchestrates: PKCE challenge/state → {@link buildAuthUrl} →
+ * {@link collectAuthCode} → {@link exchangeToken}.
+ *
+ * @param callbacks - Pi OAuth callbacks (`onAuth`, `onPrompt`, optional
+ *                   `onManualCodeInput`, `onProgress`).
+ * @returns Access/refresh credentials with an expiry timestamp.
+ * @throws `Missing authorization code` if no code is received.
+ */
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { challenge, verifier } = await generatePKCE();
   const state = generateRandomString();
@@ -220,6 +267,13 @@ export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuth
   return exchangeToken(code, verifier);
 }
 
+/**
+ * Build the Keycloak authorization-code URL.
+ *
+ * @remarks Uses the `CALLBACK_HOST` loopback redirect and the
+ *          `openid email profile offline_access` scope — `offline_access` is
+ *          what yields the refresh token the refresh path depends on.
+ */
 export function buildAuthUrl(challenge: string, state: string): string {
   const authBaseUrl = getAuthUrl();
   const parameters = new URLSearchParams({
@@ -234,6 +288,12 @@ export function buildAuthUrl(challenge: string, state: string): string {
   return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
 }
 
+/**
+ * Generate a PKCE code verifier and S256 code challenge.
+ *
+ * @remarks The verifier is 96 random bytes, base64url-encoded to a
+ *          128-character string within RFC 7636's 43–128-character range.
+ */
 export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
   const verifierBytes = new Uint8Array(96);
   crypto.getRandomValues(verifierBytes);
@@ -245,6 +305,15 @@ export async function generatePKCE(): Promise<{ challenge: string; verifier: str
   return { challenge, verifier };
 }
 
+/**
+ * Exchange an authorization code for OAuth tokens.
+ *
+ * @remarks Expiry is set with an `ACCESS_TOKEN_EXPIRY_BUFFER_MS` (60 s) lead
+ *          buffer (`now + expires_in*1000 − 60s`) so a token expiring mid-request
+ *          still triggers a refresh.
+ * @throws `Token exchange failed: <status> <body>` on non-2xx.
+ * @throws `Invalid token response: ...` when the body isn't a valid Keycloak token response.
+ */
 export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
   const authBaseUrl = getAuthUrl();
   const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
@@ -278,6 +347,15 @@ export async function exchangeToken(code: string, verifier: string): Promise<OAu
   };
 }
 
+/**
+ * Collect an authorization code from the loopback callback server.
+ *
+ * Thin wrapper over {@link _collectAuthCode} using the real
+ * {@link startCallbackServer}. Falls back to manual entry via `onPrompt` when
+ * no code arrives from the callback (e.g. state mismatch, network error).
+ *
+ * @returns The code, or `null` to trigger `onPrompt` fallback.
+ */
 export async function collectAuthCode(
   callbacks: OAuthLoginCallbacks,
   authUrl: string,
@@ -286,7 +364,12 @@ export async function collectAuthCode(
   return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
 }
 
-// Exported (prefixed _) so tests can inject a mock server factory.
+/**
+ * Testable core of {@link collectAuthCode} with an injectable server factory.
+ *
+ * @internal Exported (prefixed `_`) solely so tests can inject a mock
+ *           `serverFactory` in place of {@link startCallbackServer}.
+ */
 export async function _collectAuthCode(
   callbacks: OAuthLoginCallbacks,
   authUrl: string,
@@ -327,6 +410,19 @@ export async function _collectAuthCode(
   });
 }
 
+/**
+ * Resolve a code from manual input, racing the callback server.
+ *
+ * Runs `onManualCodeInput` concurrently with {@link startCallbackServer}'s
+ * `waitForCode`; a manual code cancels the server wait and vice versa. Phase 2
+ * times out via {@link getOAuthTimeoutMs}.
+ *
+ * @remarks The manual-input promise is intentionally left to settle in the
+ *          background if phase 1 returns via the callback — it only mutates
+ *          locals and calls `cancelWait`, which are no-ops by then.
+ * @returns The code, `null` to fall through to `onPrompt` (timeout/no input),
+ *          or rethrows the manual-input rejection.
+ */
 export async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
   callbacks: OAuthLoginCallbacks,
@@ -379,6 +475,12 @@ export async function resolveManualCode(
   return manualInput ? parseCodeFromInput(manualInput) : null;
 }
 
+/**
+ * Extract an authorization code from manual user input.
+ *
+ * @remarks Tries to parse `input` as a URL and read its `code` query param;
+ *          if that fails, treats `input` as a raw code.
+ */
 export function parseCodeFromInput(input: string): string {
   try {
     const url = new URL(input);
@@ -392,6 +494,15 @@ export function parseCodeFromInput(input: string): string {
 
 // === Token Refresh ===
 
+/**
+ * Refresh an expired access token via `POST /v1/auth/refresh`.
+ *
+ * @remarks Same `ACCESS_TOKEN_EXPIRY_BUFFER_MS` (60 s) expiry buffer as
+ *          {@link exchangeToken}. When the server omits a new refresh token, the
+ *          previous one is reused (`data.refresh_token || credentials.refresh`).
+ * @throws `Token refresh failed: <status> <body>` on non-2xx.
+ * @throws `Invalid token response: ...` when the body isn't a valid Berget token response.
+ */
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
@@ -453,6 +564,16 @@ function isBergetTokenResponse(
 
 // === Callback Server ===
 
+/**
+ * Start the local OAuth callback server on the loopback address
+ * (`CALLBACK_HOST`:`CALLBACK_PORT`).
+ *
+ * @remarks Binds `127.0.0.1` explicitly rather than `localhost` to avoid IPv6
+ *          dual-stack mismatch (`localhost` resolving to `::1` while the server
+ *          binds `127.0.0.1`). The bind address is not runtime-configurable.
+ * @returns An object with `cancelWait`, `close`, `server`, and `waitForCode`.
+ * @throws `Port <CALLBACK_PORT> is already in use` on `EADDRINUSE`.
+ */
 export function startCallbackServer(expectedState: string): Promise<{
   cancelWait: () => void;
   close: () => void;
@@ -566,6 +687,9 @@ function handleOAuthRequest(
   }
 }
 
+/**
+ * Build the browser-facing success/failure response page for the callback.
+ */
 export function oauthResponseHtml(success: boolean, message: string): string {
   const color = success ? '#4ade80' : '#f87171';
   const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
@@ -576,8 +700,13 @@ export function oauthResponseHtml(success: boolean, message: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
-// Safe for HTML text content only — do NOT reuse in an attribute context,
-// since single quotes are not escaped.
+/**
+ * Escape a string for safe interpolation as HTML text content.
+ *
+ * @remarks Safe for HTML **text content only** — do NOT reuse in an attribute
+ *          context, since single quotes are not escaped and this would introduce
+ *          an XSS sink.
+ */
 export function escapeHtml(s: string): string {
   return s
     .replaceAll('&', '&amp;')
@@ -588,6 +717,9 @@ export function escapeHtml(s: string): string {
 
 // === Helpers ===
 
+/**
+ * Normalize a `RequestInfo | URL` input to a URL string.
+ */
 export function resolveInputUrl(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.toString();
@@ -623,6 +755,12 @@ function getInferenceUrl(): string {
 
 // === Extension Entry Point ===
 
+/**
+ * Pi extension entry point. Pi awaits this async factory during startup so
+ * model discovery and provider registration complete before the first prompt
+ * or `pi --list-models`. Registers the `berget` provider with OpenAI-compatible
+ * streaming, the inference base URL, and the OAuth login/refresh functions.
+ */
 export default async function (pi: ExtensionAPI): Promise<void> {
   const models = await fetchBergetModels();
 

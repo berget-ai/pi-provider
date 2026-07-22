@@ -3,6 +3,7 @@ import eslintConfigPrettier from 'eslint-config-prettier';
 import prettier from 'eslint-plugin-prettier';
 import pluginPromise from 'eslint-plugin-promise';
 import sonarjs from 'eslint-plugin-sonarjs';
+import tsdoc from 'eslint-plugin-tsdoc';
 import unicorn from 'eslint-plugin-unicorn';
 import tseslint from 'typescript-eslint';
 
@@ -41,10 +42,12 @@ export default tseslint.config(
     },
     plugins: {
       prettier,
+      tsdoc,
     },
     rules: {
       ...prettier.configs.recommended.rules,
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      'tsdoc/syntax': 'error',
       'unicorn/no-anonymous-default-export': 'off',
       'unicorn/no-null': 'off',
       'unicorn/prevent-abbreviations': 'off',
