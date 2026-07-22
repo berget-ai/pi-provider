@@ -249,9 +249,15 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   ) {
     throw new Error('Malformed model list response: expected { models: [...] }');
   }
-  return ((data as Record<string, unknown>).models as BergetModel[]).map((model) =>
-    mapModelToProviderConfig(model),
-  );
+  const raw = (data as Record<string, unknown>).models as unknown[];
+  // Numeric fields (contextWindow, pricing) are informational — a bad value must
+  // not block the user from selecting the model, so coerce to 0 (the SDK
+  // treats contextWindow <= 0 as "unknown"). Drop entries with no valid id,
+  // since there is no model to select without one.
+  return raw
+    .map((entry) => coerceBergetModel(entry))
+    .filter((model): model is BergetModel => model !== null)
+    .map((model) => mapModelToProviderConfig(model));
 }
 
 export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
@@ -482,17 +488,36 @@ function base64URLEncode(buffer: ArrayBuffer): string {
   return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
 }
 
+// Returns a usable BergetModel, or null when the entry has no valid id (a model
+// can't be selected without one). Numeric fields are coerced to 0 on bad/missing
+// values rather than dropping the model — they're informational and a bad value
+// must not block the user from using the model.
+function coerceBergetModel(entry: unknown): BergetModel | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const record = entry as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id : '';
+  if (!id) return null;
+  return {
+    contextWindow: typeof record.contextWindow === 'number' ? record.contextWindow : 0,
+    id,
+    inputPricePerToken:
+      typeof record.inputPricePerToken === 'number' ? record.inputPricePerToken : 0,
+    outputPricePerToken:
+      typeof record.outputPricePerToken === 'number' ? record.outputPricePerToken : 0,
+  };
+}
+
 function generateRandomString(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
   return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// === PKCE Helpers ===
+
 function getApiUrl(): string {
   return process.env.BERGET_API_URL || 'https://api.berget.ai';
 }
-
-// === PKCE Helpers ===
 
 function getAuthUrl(): string {
   return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
