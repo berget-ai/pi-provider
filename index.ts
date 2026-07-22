@@ -2,7 +2,6 @@ import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-a
 import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
-import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import * as http from 'node:http';
 
 // === Constants ===
@@ -193,13 +192,6 @@ export async function collectAuthCode(
   return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
 }
 
-export function createStreamInterceptor(
-  streamFn: (request: Request, apiKey: string) => Promise<Response>,
-): (request: Request, apiKey: string) => Promise<Response> {
-  return async (request: Request, apiKey: string): Promise<Response> =>
-    processStreamWithRetry(request, apiKey, streamFn, 0);
-}
-
 // === Model Fetching & Mapping ===
 
 export function escapeHtml(s: string): string {
@@ -273,34 +265,6 @@ export async function generatePKCE(): Promise<{ challenge: string; verifier: str
   return { challenge, verifier };
 }
 
-export async function handleAuthErrorAndRetry(
-  request: Request,
-  apiKey: string,
-  streamFn: (request: Request, apiKey: string) => Promise<Response>,
-): Promise<null | Response> {
-  const refreshResult = await refreshBergetAuthToken(apiKey);
-  if (!refreshResult) {
-    return null;
-  }
-
-  const retryResponse = await streamFn(request, refreshResult.apiKey);
-  return retryResponse;
-}
-
-export function isAuthenticationError(chunk: Uint8Array): boolean {
-  const text = new TextDecoder().decode(chunk);
-  // Require SSE data: framing and a specific auth-related type/message
-  const hasDataPrefix = text.startsWith('data:');
-  const hasAuthError =
-    text.includes('"type":"authentication_error"') ||
-    text.includes('"type": "authentication_error"') ||
-    text.includes('authentication_error') ||
-    text.includes('Unauthorized') ||
-    text.includes('invalid_token') ||
-    text.includes('Invalid token');
-  return hasDataPrefix && hasAuthError;
-}
-
 export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
   const { challenge, verifier } = await generatePKCE();
   const state = generateRandomString();
@@ -350,47 +314,7 @@ export function oauthResponseHtml(success: boolean, message: string): string {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
-export async function readStreamToController(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  controller: ReadableStreamDefaultController<Uint8Array>,
-): Promise<void> {
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(value);
-    }
-  } catch (error) {
-    controller.error(error);
-  }
-}
-
-// === OAuth ===
-
 // === Callback Server ===
-
-// Refreshes the stored Berget OAuth credential (expired or invalidated mid-
-// stream) via the SDK's ModelRuntime, which owns the locked read-modify-
-// write: it checks expiry, reuses an already-rotated token if another
-// process refreshed, runs the registered oauth.refreshToken (refreshBergetToken)
-// otherwise, and persists the rotated credential. Returns an apiKey for the
-// caller to retry the failed request with, or null when the provider is not
-// configured for OAuth.
-export async function refreshBergetAuthToken(
-  // The apiKey that failed authentication. Passed as a runtime override so the
-  // SDK can reuse it when still valid, mirroring the old currentAccess guard.
-  apiKey: string,
-): Promise<null | { apiKey: string }> {
-  const modelRuntime = await ModelRuntime.create();
-  const auth = await modelRuntime.getAuth('berget', { apiKey });
-  if (!auth?.auth.apiKey) {
-    return null;
-  }
-  return { apiKey: auth.auth.apiKey };
-}
 
 export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
   const apiUrl = getApiUrl();
@@ -653,64 +577,6 @@ function parseCodeFromInput(input: string): string {
     // Not a URL, treat as raw code
   }
   return input;
-}
-
-async function processStreamWithRetry(
-  request: Request,
-  apiKey: string,
-  streamFn: (request: Request, apiKey: string) => Promise<Response>,
-  attempt: number,
-): Promise<Response> {
-  const response = await streamFn(request, apiKey);
-  const reader = response.body?.getReader();
-
-  if (!reader) {
-    return response;
-  }
-
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      let pushedAny = false;
-
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-
-          if (done) {
-            controller.close();
-            return;
-          }
-
-          if (!pushedAny && attempt === 0 && isAuthenticationError(value)) {
-            const retryResponse = await handleAuthErrorAndRetry(request, apiKey, streamFn);
-
-            if (retryResponse?.body) {
-              await reader.cancel().catch(() => {});
-              const retryReader = retryResponse.body.getReader();
-              await readStreamToController(retryReader, controller);
-              controller.close();
-            } else {
-              await reader.cancel().catch(() => {});
-              const decoded = new TextDecoder().decode(value);
-              controller.error(new Error(`Authentication failed: ${decoded.slice(0, 500)}`));
-            }
-            return;
-          }
-
-          controller.enqueue(value);
-          pushedAny = true;
-        }
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: response.headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
 }
 
 // === Extension Entry Point ===

@@ -1,25 +1,8 @@
 import type { OAuthCredentials } from '@earendil-works/pi-ai';
 
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { exchangeToken, refreshBergetAuthToken, refreshBergetToken } from '../index';
-
-vi.mock('@earendil-works/pi-coding-agent', async () => {
-  const actual = await vi.importActual<typeof import('@earendil-works/pi-coding-agent')>(
-    '@earendil-works/pi-coding-agent',
-  );
-  return {
-    ...actual,
-    ModelRuntime: {
-      create: vi.fn(),
-    },
-  };
-});
-
-async function getMockModelRuntime() {
-  const mod = await import('@earendil-works/pi-coding-agent');
-  return mod.ModelRuntime as unknown as { create: ReturnType<typeof vi.fn> };
-}
+import { exchangeToken, refreshBergetToken } from '../index';
 
 describe('Token JSON shape validation', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -33,7 +16,6 @@ describe('Token JSON shape validation', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     process.env = originalEnvironment;
-    vi.clearAllMocks();
   });
 
   test('exchangeToken throws when Keycloak response is missing access_token', async () => {
@@ -83,28 +65,6 @@ describe('Token JSON shape validation', () => {
     const creds = await exchangeToken('code', 'verifier');
     expect(creds.access).toBe('access');
     expect(creds.refresh).toBe('refresh');
-  });
-
-  test('refreshBergetAuthToken returns the apiKey resolved by ModelRuntime.getAuth', async () => {
-    const ModelRuntime = await getMockModelRuntime();
-    ModelRuntime.create.mockResolvedValue({
-      getAuth: vi
-        .fn()
-        .mockImplementation(() => Promise.resolve({ auth: { apiKey: 'resolved-access-token' } })),
-    });
-
-    const result = await refreshBergetAuthToken('expired');
-    expect(result).toEqual({ apiKey: 'resolved-access-token' });
-  });
-
-  test('refreshBergetAuthToken returns null when the provider has no resolved auth', async () => {
-    const ModelRuntime = await getMockModelRuntime();
-    ModelRuntime.create.mockResolvedValue({
-      getAuth: vi.fn().mockImplementation(() => Promise.resolve()),
-    });
-
-    const result = await refreshBergetAuthToken('expired');
-    expect(result).toBeNull();
   });
 
   test('refreshBergetToken throws when Berget response is missing token', async () => {

@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import {
-  buildAuthUrl,
-  fetchBergetModels,
-  generatePKCE,
-  isAuthenticationError,
-  oauthResponseHtml,
-} from '../index';
+import { buildAuthUrl, fetchBergetModels, generatePKCE, oauthResponseHtml } from '../index';
 
 describe('Security hardening & input validation', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -75,21 +69,5 @@ describe('Security hardening & input validation', () => {
     await expect(fetchBergetModels()).rejects.toThrow(
       'Malformed model list response: expected { models: [...] }',
     );
-  });
-
-  // --- Issue 12: isAuthenticationError fuzzy matching ---
-
-  test('isAuthenticationError does NOT trigger on assistant text mentioning 401', () => {
-    const normalChunk = new TextEncoder().encode(
-      'The HTTP 401 status code indicates an authentication failure.',
-    );
-    expect(isAuthenticationError(normalChunk)).toBe(false);
-  });
-
-  test('isAuthenticationError DOES trigger on actual SSE authentication_error frame', () => {
-    const authChunk = new TextEncoder().encode(
-      'data: {"error":{"message":"Invalid token","type":"authentication_error"}}\n\n',
-    );
-    expect(isAuthenticationError(authChunk)).toBe(true);
   });
 });
