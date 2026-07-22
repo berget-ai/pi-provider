@@ -13,8 +13,11 @@ const CALLBACK_PORT = 8787;
 const CALLBACK_HOST = '127.0.0.1';
 const CALLBACK_PATH = '/callback';
 const REDIRECT_URI = `http://127.0.0.1:${String(CALLBACK_PORT)}${CALLBACK_PATH}`;
-const OAUTH_TIMEOUT_MS = (): number =>
-  Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
+
+// Read fresh at every call so env overrides take effect without a restart.
+function getOAuthTimeoutMs(): number {
+  return Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
+}
 
 // === Model Capability Overrides ===
 // Manual overrides for model capabilities not returned by /v1/models/chat.
@@ -116,7 +119,7 @@ export const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
   },
 };
 
-// === URL Helpers ===
+// === Types ===
 
 interface BergetModel {
   contextWindow: number;
@@ -130,6 +133,160 @@ interface CallbackResult {
   state: string;
 }
 
+// === Model Fetching & Mapping ===
+
+export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
+  const apiUrl = getApiUrl();
+  const response = await fetch(`${apiUrl}/v1/models/chat`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch models: ${String(response.status)} ${response.statusText}`);
+  }
+  const data: unknown = await response.json();
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Array.isArray((data as Record<string, unknown>).models)
+  ) {
+    throw new Error('Malformed model list response: expected { models: [...] }');
+  }
+  const raw = (data as Record<string, unknown>).models as unknown[];
+  // Numeric fields (contextWindow, pricing) are informational — a bad value must
+  // not block the user from selecting the model, so coerce to 0 (the SDK
+  // treats contextWindow <= 0 as "unknown"). Drop entries with no valid id,
+  // since there is no model to select without one.
+  return raw
+    .map((entry) => coerceBergetModel(entry))
+    .filter((model): model is BergetModel => model !== null)
+    .map((model) => mapModelToProviderConfig(model));
+}
+
+export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
+  const base: ProviderModelConfig = {
+    compat: {
+      supportsDeveloperRole: false,
+    },
+    contextWindow: model.contextWindow,
+    cost: {
+      cacheRead: 0,
+      cacheWrite: 0,
+      input: model.inputPricePerToken * 1e6,
+      output: model.outputPricePerToken * 1e6,
+    },
+    id: model.id,
+    input: ['text'],
+    maxTokens: DEFAULT_MAX_TOKENS,
+    name: model.id,
+    reasoning: false,
+  };
+
+  return { ...base, ...MODEL_OVERRIDES[model.id] };
+}
+
+// Returns a usable BergetModel, or null when the entry has no valid id (a model
+// can't be selected without one). Numeric fields are coerced to 0 on bad/missing
+// values rather than dropping the model — they're informational and a bad value
+// must not block the user from using the model.
+function coerceBergetModel(entry: unknown): BergetModel | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const record = entry as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id : '';
+  if (!id) return null;
+  return {
+    contextWindow: typeof record.contextWindow === 'number' ? record.contextWindow : 0,
+    id,
+    inputPricePerToken:
+      typeof record.inputPricePerToken === 'number' ? record.inputPricePerToken : 0,
+    outputPricePerToken:
+      typeof record.outputPricePerToken === 'number' ? record.outputPricePerToken : 0,
+  };
+}
+
+// === OAuth (Authorization Code + PKCE) ===
+
+export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+  const { challenge, verifier } = await generatePKCE();
+  const state = generateRandomString();
+
+  const authUrl = buildAuthUrl(challenge, state);
+
+  const code = await collectAuthCode(callbacks, authUrl, state);
+
+  if (!code) {
+    throw new Error('Missing authorization code');
+  }
+
+  callbacks.onProgress?.('Exchanging authorization code for tokens...');
+
+  return exchangeToken(code, verifier);
+}
+
+export function buildAuthUrl(challenge: string, state: string): string {
+  const authBaseUrl = getAuthUrl();
+  const parameters = new URLSearchParams({
+    client_id: KEYCLOAK_CLIENT_ID,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile offline_access',
+    state,
+  });
+  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
+}
+
+export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
+  const verifierBytes = new Uint8Array(96);
+  crypto.getRandomValues(verifierBytes);
+  const verifier = base64URLEncode(verifierBytes.buffer);
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = base64URLEncode(digest);
+  return { challenge, verifier };
+}
+
+export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
+  const authBaseUrl = getAuthUrl();
+  const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
+    body: new URLSearchParams({
+      client_id: KEYCLOAK_CLIENT_ID,
+      code,
+      code_verifier: verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+    }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
+  });
+
+  if (!tokenResponse.ok) {
+    const errorBody = await tokenResponse.text();
+    throw new Error(`Token exchange failed: ${String(tokenResponse.status)} ${errorBody}`);
+  }
+
+  const tokenData: unknown = await tokenResponse.json();
+  if (!isKeycloakTokenResponse(tokenData)) {
+    throw new Error(
+      'Invalid token response: expected { access_token: string, expires_in: number, refresh_token: string }',
+    );
+  }
+
+  return {
+    access: tokenData.access_token,
+    expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+    refresh: tokenData.refresh_token,
+  };
+}
+
+export async function collectAuthCode(
+  callbacks: OAuthLoginCallbacks,
+  authUrl: string,
+  state: string,
+): Promise<null | string> {
+  return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
+}
+
+// Exported (prefixed _) so tests can inject a mock server factory.
 export async function _collectAuthCode(
   callbacks: OAuthLoginCallbacks,
   authUrl: string,
@@ -170,195 +327,6 @@ export async function _collectAuthCode(
   });
 }
 
-export function buildAuthUrl(challenge: string, state: string): string {
-  const authBaseUrl = getAuthUrl();
-  const parameters = new URLSearchParams({
-    client_id: KEYCLOAK_CLIENT_ID,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    redirect_uri: REDIRECT_URI,
-    response_type: 'code',
-    scope: 'openid email profile offline_access',
-    state,
-  });
-  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
-}
-
-export async function collectAuthCode(
-  callbacks: OAuthLoginCallbacks,
-  authUrl: string,
-  state: string,
-): Promise<null | string> {
-  return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
-}
-
-// === Model Fetching & Mapping ===
-
-export function escapeHtml(s: string): string {
-  return s
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-}
-
-export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
-  const authBaseUrl = getAuthUrl();
-  const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
-    body: new URLSearchParams({
-      client_id: KEYCLOAK_CLIENT_ID,
-      code,
-      code_verifier: verifier,
-      grant_type: 'authorization_code',
-      redirect_uri: REDIRECT_URI,
-    }),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    method: 'POST',
-  });
-
-  if (!tokenResponse.ok) {
-    const errorBody = await tokenResponse.text();
-    throw new Error(`Token exchange failed: ${String(tokenResponse.status)} ${errorBody}`);
-  }
-
-  const tokenData: unknown = await tokenResponse.json();
-  if (!isKeycloakTokenResponse(tokenData)) {
-    throw new Error(
-      'Invalid token response: expected { access_token: string, expires_in: number, refresh_token: string }',
-    );
-  }
-
-  return {
-    access: tokenData.access_token,
-    expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
-    refresh: tokenData.refresh_token,
-  };
-}
-
-export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/v1/models/chat`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch models: ${String(response.status)} ${response.statusText}`);
-  }
-  const data: unknown = await response.json();
-  if (
-    !data ||
-    typeof data !== 'object' ||
-    !Array.isArray((data as Record<string, unknown>).models)
-  ) {
-    throw new Error('Malformed model list response: expected { models: [...] }');
-  }
-  const raw = (data as Record<string, unknown>).models as unknown[];
-  // Numeric fields (contextWindow, pricing) are informational — a bad value must
-  // not block the user from selecting the model, so coerce to 0 (the SDK
-  // treats contextWindow <= 0 as "unknown"). Drop entries with no valid id,
-  // since there is no model to select without one.
-  return raw
-    .map((entry) => coerceBergetModel(entry))
-    .filter((model): model is BergetModel => model !== null)
-    .map((model) => mapModelToProviderConfig(model));
-}
-
-export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
-  const verifierBytes = new Uint8Array(96);
-  crypto.getRandomValues(verifierBytes);
-  const verifier = base64URLEncode(verifierBytes.buffer);
-  const encoder = new TextEncoder();
-  const data = encoder.encode(verifier);
-  const digest = await crypto.subtle.digest('SHA-256', data);
-  const challenge = base64URLEncode(digest);
-  return { challenge, verifier };
-}
-
-export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
-  const { challenge, verifier } = await generatePKCE();
-  const state = generateRandomString();
-
-  const authUrl = buildAuthUrl(challenge, state);
-
-  const code = await collectAuthCode(callbacks, authUrl, state);
-
-  if (!code) {
-    throw new Error('Missing authorization code');
-  }
-
-  callbacks.onProgress?.('Exchanging authorization code for tokens...');
-
-  return exchangeToken(code, verifier);
-}
-
-export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
-  const base: ProviderModelConfig = {
-    compat: {
-      supportsDeveloperRole: false,
-    },
-    contextWindow: model.contextWindow,
-    cost: {
-      cacheRead: 0,
-      cacheWrite: 0,
-      input: model.inputPricePerToken * 1e6,
-      output: model.outputPricePerToken * 1e6,
-    },
-    id: model.id,
-    input: ['text'],
-    maxTokens: DEFAULT_MAX_TOKENS,
-    name: model.id,
-    reasoning: false,
-  };
-
-  return { ...base, ...MODEL_OVERRIDES[model.id] };
-}
-
-export function oauthResponseHtml(success: boolean, message: string): string {
-  const color = success ? '#4ade80' : '#f87171';
-  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
-  const title = success ? 'Authentication Successful' : 'Authentication Failed';
-  const icon = success
-    ? `<polyline points="20 6 9 17 4 12"/>`
-    : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
-}
-
-// === Callback Server ===
-
-export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-  const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
-    body: JSON.stringify({
-      refresh_token: credentials.refresh,
-    }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
-  }
-
-  const data: unknown = await response.json();
-  if (!isBergetTokenResponse(data)) {
-    throw new Error(
-      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
-    );
-  }
-
-  return {
-    access: data.token,
-    expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
-    refresh: data.refresh_token || credentials.refresh,
-  };
-}
-
-export function resolveInputUrl(input: RequestInfo | URL): string {
-  if (typeof input === 'string') return input;
-  if (input instanceof URL) return input.toString();
-  return input.url;
-}
-
-// === OAuth ===
-
 export async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
   callbacks: OAuthLoginCallbacks,
@@ -396,7 +364,7 @@ export async function resolveManualCode(
     setTimeout(() => {
       callbackServer.cancelWait();
       resolve(null);
-    }, OAUTH_TIMEOUT_MS());
+    }, getOAuthTimeoutMs());
   });
 
   const winner = await Promise.race([manualPromise, timeoutPromise]);
@@ -410,6 +378,80 @@ export async function resolveManualCode(
 
   return manualInput ? parseCodeFromInput(manualInput) : null;
 }
+
+export function parseCodeFromInput(input: string): string {
+  try {
+    const url = new URL(input);
+    const code = url.searchParams.get('code');
+    if (code) return code;
+  } catch {
+    // Not a URL, treat as raw code
+  }
+  return input;
+}
+
+// === Token Refresh ===
+
+export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+  const apiUrl = getApiUrl();
+  const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
+    body: JSON.stringify({
+      refresh_token: credentials.refresh,
+    }),
+    headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
+  }
+
+  const data: unknown = await response.json();
+  if (!isBergetTokenResponse(data)) {
+    throw new Error(
+      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
+    );
+  }
+
+  return {
+    access: data.token,
+    expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+    refresh: data.refresh_token || credentials.refresh,
+  };
+}
+
+// === Token Response Validation ===
+
+function isKeycloakTokenResponse(
+  data: unknown,
+): data is { access_token: string; expires_in: number; refresh_token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'access_token' in data &&
+    typeof (data as Record<string, unknown>).access_token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number' &&
+    'refresh_token' in data &&
+    typeof (data as Record<string, unknown>).refresh_token === 'string'
+  );
+}
+
+function isBergetTokenResponse(
+  data: unknown,
+): data is { expires_in: number; refresh_token?: string; token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'token' in data &&
+    typeof (data as Record<string, unknown>).token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number'
+  );
+}
+
+// === Callback Server ===
 
 export function startCallbackServer(expectedState: string): Promise<{
   cancelWait: () => void;
@@ -457,7 +499,7 @@ export function startCallbackServer(expectedState: string): Promise<{
     server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
       const timeout = setTimeout(() => {
         settleWait?.(null);
-      }, OAUTH_TIMEOUT_MS());
+      }, getOAuthTimeoutMs());
 
       resolve({
         cancelWait: () => {
@@ -477,54 +519,6 @@ export function startCallbackServer(expectedState: string): Promise<{
       });
     });
   });
-}
-
-function base64URLEncode(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let string_ = '';
-  for (const byte of bytes) {
-    string_ += String.fromCodePoint(byte);
-  }
-  return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
-}
-
-// Returns a usable BergetModel, or null when the entry has no valid id (a model
-// can't be selected without one). Numeric fields are coerced to 0 on bad/missing
-// values rather than dropping the model — they're informational and a bad value
-// must not block the user from using the model.
-function coerceBergetModel(entry: unknown): BergetModel | null {
-  if (typeof entry !== 'object' || entry === null) return null;
-  const record = entry as Record<string, unknown>;
-  const id = typeof record.id === 'string' ? record.id : '';
-  if (!id) return null;
-  return {
-    contextWindow: typeof record.contextWindow === 'number' ? record.contextWindow : 0,
-    id,
-    inputPricePerToken:
-      typeof record.inputPricePerToken === 'number' ? record.inputPricePerToken : 0,
-    outputPricePerToken:
-      typeof record.outputPricePerToken === 'number' ? record.outputPricePerToken : 0,
-  };
-}
-
-function generateRandomString(): string {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-// === PKCE Helpers ===
-
-function getApiUrl(): string {
-  return process.env.BERGET_API_URL || 'https://api.berget.ai';
-}
-
-function getAuthUrl(): string {
-  return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
-}
-
-function getInferenceUrl(): string {
-  return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
 }
 
 function handleOAuthRequest(
@@ -572,43 +566,59 @@ function handleOAuthRequest(
   }
 }
 
-function isBergetTokenResponse(
-  data: unknown,
-): data is { expires_in: number; refresh_token?: string; token: string } {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    'token' in data &&
-    typeof (data as Record<string, unknown>).token === 'string' &&
-    'expires_in' in data &&
-    typeof (data as Record<string, unknown>).expires_in === 'number'
-  );
+export function oauthResponseHtml(success: boolean, message: string): string {
+  const color = success ? '#4ade80' : '#f87171';
+  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
+  const title = success ? 'Authentication Successful' : 'Authentication Failed';
+  const icon = success
+    ? `<polyline points="20 6 9 17 4 12"/>`
+    : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
 }
 
-function isKeycloakTokenResponse(
-  data: unknown,
-): data is { access_token: string; expires_in: number; refresh_token: string } {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    'access_token' in data &&
-    typeof (data as Record<string, unknown>).access_token === 'string' &&
-    'expires_in' in data &&
-    typeof (data as Record<string, unknown>).expires_in === 'number' &&
-    'refresh_token' in data &&
-    typeof (data as Record<string, unknown>).refresh_token === 'string'
-  );
+// Safe for HTML text content only — do NOT reuse in an attribute context,
+// since single quotes are not escaped.
+export function escapeHtml(s: string): string {
+  return s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
-function parseCodeFromInput(input: string): string {
-  try {
-    const url = new URL(input);
-    const code = url.searchParams.get('code');
-    if (code) return code;
-  } catch {
-    // Not a URL, treat as raw code
+// === Helpers ===
+
+export function resolveInputUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function base64URLEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let string_ = '';
+  for (const byte of bytes) {
+    string_ += String.fromCodePoint(byte);
   }
-  return input;
+  return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
+}
+
+function generateRandomString(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getApiUrl(): string {
+  return process.env.BERGET_API_URL || 'https://api.berget.ai';
+}
+
+function getAuthUrl(): string {
+  return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
+}
+
+function getInferenceUrl(): string {
+  return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
 }
 
 // === Extension Entry Point ===

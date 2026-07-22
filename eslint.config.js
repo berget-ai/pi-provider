@@ -1,6 +1,5 @@
 import vitest from '@vitest/eslint-plugin';
 import eslintConfigPrettier from 'eslint-config-prettier';
-import perfectionist from 'eslint-plugin-perfectionist';
 import prettier from 'eslint-plugin-prettier';
 import pluginPromise from 'eslint-plugin-promise';
 import sonarjs from 'eslint-plugin-sonarjs';
@@ -28,7 +27,6 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   pluginPromise.configs['flat/recommended'],
-  perfectionist.configs['recommended-natural'],
   sonarjs.configs.recommended,
   unicorn.configs.recommended,
   {

@@ -346,15 +346,6 @@ describe('OAuth & Token Refresh', () => {
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow('Network error');
   });
 
-  test('getApiKey returns cred.access', () => {
-    const cred: OAuthCredentials = {
-      access: 'my-access-token',
-      expires: Date.now() + 60_000,
-      refresh: 'r',
-    };
-    expect(cred.access).toBe('my-access-token');
-  });
-
   test('refreshToken() sequential refresh chain works when refresh_token is rotated', async () => {
     process.env.BERGET_API_URL = 'https://test-api.berget.ai';
 

@@ -57,7 +57,7 @@ The extension calls `pi.registerProvider("berget", ...)` with:
 
 The provider implements a PKCE-based authorization code flow:
 
-- **`loginBerget`** — opens the Berget AI login page in the user's browser, starts a local callback server on `http://localhost:8787`, captures the authorization code, and exchanges it for access and refresh tokens
+- **`loginBerget`** — opens the Berget AI login page in the user's browser, starts a local callback server on `http://127.0.0.1:8787`, captures the authorization code, and exchanges it for access and refresh tokens
 - **`refreshBergetToken`** — refreshes expired tokens via `POST https://api.berget.ai/v1/auth/refresh` using the stored refresh token; the new access token is used as the Bearer token for inference requests
 
 Credentials are persisted in `~/.pi/agent/auth.json` and refreshed automatically before each inference request if they have expired.
