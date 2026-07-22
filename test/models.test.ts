@@ -1,6 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { fetchBergetModels, mapModelToProviderConfig, resolveInputUrl } from '../index';
+import {
+  fetchBergetModels,
+  mapModelToProviderConfig,
+  MODEL_OVERRIDES,
+  resolveInputUrl,
+} from '../index';
+
+// Minimal BergetModel used by the table-driven override test. Per-field
+// values are arbitrary but valid; each test asserts only the override fields.
+function minimalModel(id: string) {
+  return {
+    contextWindow: 128_000,
+    id,
+    inputPricePerToken: 0.000_000_3,
+    outputPricePerToken: 0.000_000_3,
+  };
+}
 
 describe('Model Fetching & Mapping', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -212,5 +228,39 @@ describe('Model Fetching & Mapping', () => {
     expect(result.contextWindow).toBe(256_000);
     expect(result.cost.input).toBeCloseTo(0.2);
     expect(result.cost.output).toBeCloseTo(0.8);
+  });
+});
+
+describe('MODEL_OVERRIDES table (regression guard)', () => {
+  // Every override must actually win over the base defaults. This catches:
+  //   - dropped overrides (e.g. an id that no longer matches the API catalog),
+  //   - bad thinkingLevelMap shapes,
+  //   - the GLM-5.2 maxTokens bump.
+  // It does NOT catch key/API drift — that needs a fixture against a real
+  // /v1/models/chat snapshot.
+  for (const [id, override] of Object.entries(MODEL_OVERRIDES)) {
+    test(`override for ${id} replaces the base defaults`, () => {
+      const result = mapModelToProviderConfig(minimalModel(id));
+      expect(result.id).toBe(id);
+
+      for (const [key, value] of Object.entries(override)) {
+        expect(result[key as keyof typeof result]).toEqual(value);
+      }
+
+      // Untouched base fields must survive the spread (shallow merge: the
+      // override replaces whole sub-objects, so verify the ones overrides
+      // never touch).
+      expect(result.compat).toEqual({ supportsDeveloperRole: false });
+      expect(result.cost.cacheRead).toBe(0);
+      expect(result.cost.cacheWrite).toBe(0);
+      expect(result.contextWindow).toBe(128_000);
+      expect(result.maxTokens).toBe(override.maxTokens ?? 16_384);
+    });
+  }
+
+  test('every override key is a non-empty string (guard against typos/blank ids)', () => {
+    for (const id of Object.keys(MODEL_OVERRIDES)) {
+      expect(id, 'override id must be non-empty').toMatch(/^.+$/);
+    }
   });
 });

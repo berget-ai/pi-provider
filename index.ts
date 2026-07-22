@@ -20,7 +20,7 @@ const OAUTH_TIMEOUT_MS = (): number =>
 // Manual overrides for model capabilities not returned by /v1/models/chat.
 // Hugging Face model cards are the source of truth for these values.
 
-const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
+export const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
   'google/gemma-4-31B-it': {
     input: ['text', 'image'],
     reasoning: true,
