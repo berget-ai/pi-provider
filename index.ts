@@ -362,6 +362,13 @@ export async function resolveManualCode(
   let manualInput: string | undefined;
   let manualError: Error | undefined;
 
+  // Runs concurrently with waitForCode so a manual code can cancel the server
+  // wait. The .catch records the rejection for phase 2 and prevents an
+  // unhandled rejection. NB: if phase 1 returns via the callback, this promise
+  // is intentionally left to settle in the background — it only mutates locals
+  // and calls cancelWait, which are no-ops by then. We cannot await it before
+  // returning because onManualCodeInput may resolve/reject only after the
+  // caller has moved on.
   const manualPromise = callbacks
     .onManualCodeInput()
     .then((input) => {

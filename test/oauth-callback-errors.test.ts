@@ -114,6 +114,50 @@ describe('OAuth Callback Error Handling', () => {
     expect(mockServer.cancelWait).toHaveBeenCalled();
   });
 
+  // --- Invariant: the .catch on the concurrent manual promise means a late
+  // onManualCodeInput rejection (settling after the callback won) does not
+  // surface as an unhandled rejection. ---
+
+  test('resolveManualCode does not emit an unhandled rejection when manual input rejects after a callback win', async () => {
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => rejections.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    let rejectManual!: (error: Error) => void;
+    const mockServer = {
+      cancelWait: vi.fn(),
+      close: vi.fn(),
+      waitForCode: vi.fn().mockResolvedValue({ code: 'callback-code', state: 's' }),
+    };
+
+    const callbacks: OAuthLoginCallbacks = {
+      onAuth: vi.fn(),
+      onDeviceCode: () => {},
+      onManualCodeInput: () =>
+        new Promise<string>((_resolve, reject) => {
+          rejectManual = reject;
+        }),
+      onPrompt: vi.fn().mockResolvedValue('fallback-code'),
+      onSelect: () => Promise.resolve(''),
+    };
+
+    try {
+      // @ts-expect-error — using a plain object as the callback server interface
+      const code = await resolveManualCode(mockServer, callbacks);
+      expect(code).toBe('callback-code');
+
+      // The late rejection arrives after resolveManualCode returned.
+      rejectManual(new Error('late manual failure'));
+      // Let the microtask queue drain so the .catch would run.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(rejections).toHaveLength(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   // --- Issue E: callback server cleanup on manual input hang ---
 
   test('resolveManualCode timeout still allows callbackServer.close() to work', async () => {
