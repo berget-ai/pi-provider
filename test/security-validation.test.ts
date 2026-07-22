@@ -70,4 +70,119 @@ describe('Security hardening & input validation', () => {
       'Malformed model list response: expected { models: [...] }',
     );
   });
+
+  // --- Entry-level validation: numeric fields are informational, so a bad
+  // value must not block the user from using the model. ---
+
+  test('fetchBergetModels coerces a missing inputPricePerToken to 0 (loads the model, no NaN)', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                contextWindow: 128_000,
+                id: 'unpriced-model',
+                outputPricePerToken: 0.000_000_3,
+              },
+            ],
+          },
+          { status: 200 },
+        ),
+      );
+
+    const models = await fetchBergetModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe('unpriced-model');
+    expect(models[0].cost.input).toBe(0);
+    expect(models[0].cost.output).toBe(0.3);
+    expect(Number.isNaN(models[0].cost.input)).toBe(false);
+  });
+
+  test('fetchBergetModels coerces a non-numeric contextWindow to 0', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                contextWindow: '128000',
+                id: 'bad-context-model',
+                inputPricePerToken: 0.000_000_3,
+                outputPricePerToken: 0.000_000_3,
+              },
+            ],
+          },
+          { status: 200 },
+        ),
+      );
+
+    const models = await fetchBergetModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe('bad-context-model');
+    expect(models[0].contextWindow).toBe(0);
+  });
+
+  test('fetchBergetModels drops an entry that has no valid id', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                contextWindow: 128_000,
+                inputPricePerToken: 0.000_000_3,
+                outputPricePerToken: 0.000_000_3,
+              },
+              {
+                contextWindow: 64_000,
+                id: 'real-model',
+                inputPricePerToken: 0.000_000_3,
+                outputPricePerToken: 0.000_000_3,
+              },
+            ],
+          },
+          { status: 200 },
+        ),
+      );
+
+    const models = await fetchBergetModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe('real-model');
+  });
+
+  test('fetchBergetModels accepts an entry with extra fields (aliases, lifecycleState)', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          {
+            models: [
+              {
+                aliases: ['alias-1'],
+                contextWindow: 128_000,
+                id: 'openai/gpt-oss-120b',
+                inputPricePerToken: 0.000_001,
+                lifecycleState: 'stable',
+                outputPricePerToken: 0.000_002,
+              },
+            ],
+          },
+          { status: 200 },
+        ),
+      );
+
+    const models = await fetchBergetModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].id).toBe('openai/gpt-oss-120b');
+    expect(models[0].cost.input).toBe(1);
+    expect(models[0].cost.output).toBe(2);
+  });
 });
