@@ -14,10 +14,8 @@ import {
   envApiKeyAuth,
   type AuthInteraction,
   type Model,
-  type OAuthCredential,
-  type OAuthCredentials,
   type OAuthAuth,
-  type RefreshModelsContext,
+  type OAuthCredential,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -408,30 +406,11 @@ export async function _collectAuthCode(
       url: authUrl,
     });
 
-    // Race the loopback callback server against a manual_code prompt. The
-    // prompt's per-prompt `signal` aborts it once the callback server wins, so
-    // the manual-input promise never lingers after we return.
-    const controller = new AbortController();
-    callbackServer
-      .waitForCode()
-      .then((result) => {
-        if (result) controller.abort();
-      })
-      .catch(() => controller.abort());
-
-    let code: null | string = null;
-    try {
-      const manualInput = await interaction.prompt({
-        message: 'Enter the authorization code from the callback URL',
-        placeholder: 'Authorization code',
-        signal: controller.signal,
-        type: 'manual_code',
-      });
-      code = parseCodeFromInput(manualInput);
-    } catch {
-      // Manual prompt was aborted (callback server won) or cancelled; fall
-      // through to the callback-server result below.
-    }
+    // Race the loopback callback server against a `manual_code` prompt.
+    // `resolveManualCode` runs the prompt concurrently with `waitForCode` and
+    // times out via `getOAuthTimeoutMs()`, preserving the two-phase race that
+    // `oauth-callback-errors.test.ts` encodes.
+    let code: null | string = await resolveManualCode(callbackServer, interaction);
 
     if (!code) {
       const result = await callbackServer.waitForCode();
@@ -453,22 +432,20 @@ export async function _collectAuthCode(
 /**
  * Resolve a code from manual input, racing the callback server.
  *
- * Runs `onManualCodeInput` concurrently with {@link startCallbackServer}'s
+ * Runs a `manual_code` prompt concurrently with {@link startCallbackServer}'s
  * `waitForCode`; a manual code cancels the server wait and vice versa. Phase 2
  * times out via {@link getOAuthTimeoutMs}.
  *
  * @remarks The manual-input promise is intentionally left to settle in the
  *          background if phase 1 returns via the callback — it only mutates
  *          locals and calls `cancelWait`, which are no-ops by then.
- * @returns The code, `null` to fall through to `onPrompt` (timeout/no input),
- *          or rethrows the manual-input rejection.
+ * @returns The code, `null` to fall through to the `text` prompt (timeout/no
+ *          input), or rethrows the manual-input rejection.
  */
 export async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
-  callbacks: OAuthLoginCallbacks,
+  interaction: AuthInteraction,
 ): Promise<null | string> {
-  if (!callbacks.onManualCodeInput) return null;
-
   let manualInput: string | undefined;
   let manualError: Error | undefined;
 
@@ -477,11 +454,15 @@ export async function resolveManualCode(
   // unhandled rejection. NB: if phase 1 returns via the callback, this promise
   // is intentionally left to settle in the background — it only mutates locals
   // and calls cancelWait, which are no-ops by then. We cannot await it before
-  // returning because onManualCodeInput may resolve/reject only after the
-  // caller has moved on.
-  const manualPromise = callbacks
-    .onManualCodeInput()
-    .then((input) => {
+  // returning because the prompt may resolve/reject only after the caller has
+  // moved on.
+  const manualPromise = interaction
+    .prompt({
+      message: 'Enter the authorization code from the callback URL',
+      placeholder: 'Authorization code',
+      type: 'manual_code',
+    })
+    .then((input: string) => {
       manualInput = input;
       callbackServer.cancelWait();
       return input;
@@ -506,7 +487,7 @@ export async function resolveManualCode(
   const winner = await Promise.race([manualPromise, timeoutPromise]);
 
   if (winner === null) {
-    // Timeout — fall through to onPrompt in collectAuthCode
+    // Timeout — fall through to the text prompt in _collectAuthCode.
     return null;
   }
 
@@ -543,7 +524,10 @@ export function parseCodeFromInput(input: string): string {
  * @throws `Token refresh failed: <status> <body>` on non-2xx.
  * @throws `Invalid token response: ...` when the body isn't a valid Berget token response.
  */
-export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+export async function refreshBergetToken(
+  credentials: OAuthCredential,
+  signal?: AbortSignal,
+): Promise<OAuthCredential> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
     body: JSON.stringify({
@@ -551,6 +535,7 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     }),
     headers: { 'Content-Type': 'application/json' },
     method: 'POST',
+    signal,
   });
 
   if (!response.ok) {
@@ -569,6 +554,7 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     access: data.token,
     expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
     refresh: data.refresh_token || credentials.refresh,
+    type: 'oauth',
   };
 }
 
@@ -802,28 +788,48 @@ function getInferenceUrl(): string {
  * streaming, the inference base URL, and the OAuth login/refresh functions.
  */
 export default async function (pi: ExtensionAPI): Promise<void> {
+  // Unconditional startup fetch preserves `pi --list-models` visibility for
+  // unauthenticated users (matches the pre-migration behaviour). A throw here
+  // aborts registration, same as before. See docs/persistence-migration.md
+  // Risks #1 — `createProvider({ models: [] })` would leave the catalog empty
+  // for logged-out users because `Models.refresh` skips providers with no
+  // resolved credential.
   const models = await fetchBergetModels();
 
-  pi.registerProvider('berget', {
-    api: 'openai-completions',
-    apiKey: '$BERGET_API_KEY',
-    authHeader: true,
-    baseUrl: getInferenceUrl(),
-    models,
-    name: 'Berget AI',
-    // Live model discovery: /model background refresh and `pi update --models`
-    // re-call fetchBergetModels so the catalog stays current without a Pi
-    // restart. The startup `models` above is still published immediately for
-    // `pi --list-models`. Persistence via `context.store` is intentionally not
-    // implemented: the store holds pi-ai `Model[]` while this returns
-    // `ProviderModelConfig[]`, and pi does not export the converter at this
-    // SDK level. See pi v0.80.8 — persistence is optional by design.
-    refreshModels: () => fetchBergetModels(),
-    oauth: {
-      getApiKey: (cred) => cred.access,
-      login: loginBerget,
+  pi.registerProvider(
+    createProvider({
+      api: openAICompletionsApi(),
+      auth: {
+        apiKey: envApiKeyAuth('Berget AI', ['BERGET_API_KEY']),
+        oauth: bergetOAuthAuth(),
+      },
+      baseUrl: getInferenceUrl(),
+      // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
+      // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
+      // can restore/persist it through the store — closing the shape gap that
+      // blocked persistence on the legacy `ProviderConfig` form (PR #22).
+      fetchModels: () => fetchBergetModels(),
+      id: 'berget',
+      models,
       name: 'Berget AI',
-      refreshToken: refreshBergetToken,
-    },
-  });
+    }),
+  );
+}
+
+/**
+ * Build the Berget {@link OAuthAuth} by adapting the PKCE login/refresh flow to
+ * `createProvider`'s `login`/`refresh`/`toAuth` shape.
+ *
+ * @remarks `toAuth` replaces the legacy `getApiKey: (cred) => cred.access` —
+ *          the stored OAuth access token becomes the request `apiKey`.
+ */
+function bergetOAuthAuth(): OAuthAuth {
+  return {
+    login: (interaction: AuthInteraction) => loginBerget(interaction),
+    loginLabel: 'Sign in with Berget Code',
+    name: 'Berget AI',
+    refresh: (credential: OAuthCredential, signal?: AbortSignal) =>
+      refreshBergetToken(credential, signal),
+    toAuth: async (credential: OAuthCredential) => ({ apiKey: credential.access }),
+  };
 }
