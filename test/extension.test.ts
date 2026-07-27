@@ -204,4 +204,69 @@ describe('Extension Entry Point', () => {
       expect(model.compat).toEqual({ supportsDeveloperRole: false });
     }
   });
+
+  test('refreshModels is registered and re-runs live discovery', async () => {
+    process.env.BERGET_API_URL = 'https://test-api.berget.ai';
+
+    let modelsCallCount = 0;
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      const url = resolveInputUrl(input);
+      if (url.includes('/v1/models/chat')) {
+        modelsCallCount += 1;
+        // The factory's fetch returns gpt-oss-120b; refreshModels's fetch
+        // returns a different list (model swapped + count changed) to prove
+        // the refresh path re-runs fetchBergetModels rather than replaying
+        // the startup list.
+        const id =
+          modelsCallCount === 1 ? 'openai/gpt-oss-120b' : 'meta-llama/Llama-3.3-70B-Instruct';
+        return Promise.resolve(
+          Response.json(
+            {
+              models: [
+                {
+                  contextWindow: 128_000,
+                  id,
+                  inputPricePerToken: 0.000_001,
+                  outputPricePerToken: 0.000_002,
+                },
+              ],
+            },
+            { headers: { 'Content-Type': 'application/json' }, status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response('Not found', { status: 404 }));
+    };
+
+    let capturedConfig: null | ProviderConfig = null;
+    const mockPi = {
+      registerProvider: (_name: string, config: ProviderConfig): void => {
+        capturedConfig = config;
+      },
+    };
+
+    const { default: extension } = await import('../index');
+    await extension(mockPi as ExtensionAPI);
+
+    // Startup: one fetch, the published startup list is gpt-oss-120b.
+    expect(modelsCallCount).toBe(1);
+    expect(capturedConfig!.models).toHaveLength(1);
+    expect(capturedConfig!.models![0].id).toBe('openai/gpt-oss-120b');
+    expect(typeof capturedConfig!.refreshModels).toBe('function');
+
+    // refreshModels: a second live fetch, returning a different catalog. The
+    // store stub satisfies RefreshModelsContext's required `store`; the
+    // minimal refreshModels does not read or write the store.
+    const refreshed = await capturedConfig!.refreshModels!({
+      allowNetwork: true,
+      store: {
+        read: () => Promise.resolve() as Promise<undefined>,
+        write: () => Promise.resolve(),
+        delete: () => Promise.resolve(),
+      },
+    });
+    expect(modelsCallCount).toBe(2);
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0].id).toBe('meta-llama/Llama-3.3-70B-Instruct');
+  });
 });
