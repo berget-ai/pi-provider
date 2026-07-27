@@ -4,7 +4,7 @@ Run [Berget AI](https://berget.ai) models inside [Pi](https://pi.dev).
 
 ## Prerequisites
 
-- [Pi](https://pi.dev) v0.50.0 or later
+- [Pi](https://pi.dev) v0.80.x or later
 - A [Berget AI](https://berget.ai) account
 
 ## Installation

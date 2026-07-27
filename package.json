@@ -24,6 +24,9 @@
   },
   "bugs": "https://github.com/berget-ai/pi-provider/issues",
   "homepage": "https://berget.ai",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "test": "vitest run",
     "lint": "eslint .",
