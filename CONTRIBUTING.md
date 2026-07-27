@@ -62,6 +62,12 @@ The provider implements a PKCE-based authorization code flow:
 
 Credentials are persisted in `~/.pi/agent/auth.json` and refreshed automatically before each inference request if they have expired.
 
+## Future work: full-provider form + catalog persistence
+
+The extension currently uses Pi's legacy `registerProvider(name, ProviderConfig)` form with a `refreshModels` callback (added in PR #22) for live `/model` discovery. Persisting the catalog across sessions via Pi's `ModelsStore` is *not* possible on this form because `refreshModels` returns `ProviderModelConfig[]` while the store holds pi-ai `Model[]`, and Pi does not export the converter.
+
+Pi v0.81.0's "Full provider extensions" (`createProvider()` + the object-form `registerProvider(provider)`) removes that blocker and is the path to persistence. It is a meaningful rewrite (provider registration, the OAuth subsystem, and the auth/model test suites) and is tracked in [`docs/persistence-migration.md`](./docs/persistence-migration.md), which captures the verified v0.81.x API surface and the ordered work. The in-progress attempt lives on the `feat/full-provider-persistence` branch (local WIP, not merged).
+
 ## Resources
 
 - [Pi Extensions Documentation](https://pi.dev/docs/latest/extensions)
