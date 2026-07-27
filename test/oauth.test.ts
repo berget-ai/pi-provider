@@ -1,6 +1,10 @@
-import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
-
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import type {
+  AuthEvent,
+  AuthInteraction,
+  AuthPrompt,
+  OAuthCredential,
+} from '@earendil-works/pi-ai';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { generatePKCE, loginBerget, refreshBergetToken, resolveInputUrl } from '../index';
 
@@ -39,6 +43,32 @@ function mockFetch(
   };
 }
 
+/**
+ * Build an `AuthInteraction` mock whose individual events/prompts are spies.
+ * Defaults model the legacy `OAuthLoginCallbacks` baseline: the `manual_code`
+ * prompt never resolves (so the callback server or the `text` fallback wins),
+ * and `notify` (auth-url/progress) records its event for assertions.
+ */
+function mockInteraction(
+  overrides: {
+    onNotify?: (event: AuthEvent) => void;
+    manualCode?: (prompt: AuthPrompt) => Promise<string>;
+    text?: (prompt: AuthPrompt) => Promise<string>;
+  } = {},
+): AuthInteraction & { notify: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn> } {
+  const notify = vi.fn((event: AuthEvent) => {
+    overrides.onNotify?.(event);
+  });
+  const prompt = vi.fn((p: AuthPrompt): Promise<string> => {
+    if (p.type === 'manual_code') {
+      return (overrides.manualCode ?? (() => new Promise(() => {})))(p);
+    }
+    // 'text' fallback (the only other prompt type the login flow issues).
+    return (overrides.text ?? (() => Promise.resolve('fallback-code')))(p);
+  });
+  return { notify, prompt };
+}
+
 describe('OAuth & Token Refresh', () => {
   let originalFetch: typeof globalThis.fetch;
   let originalEnvironment: NodeJS.ProcessEnv;
@@ -51,6 +81,7 @@ describe('OAuth & Token Refresh', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     process.env = originalEnvironment;
+    vi.restoreAllMocks();
   });
 
   test('generatePKCE() creates a spec-compliant code verifier', async () => {
@@ -73,18 +104,15 @@ describe('OAuth & Token Refresh', () => {
       resolveAuthUrl = resolve;
     });
 
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => {
-        resolveAuthUrl(info.url);
+    const interaction = mockInteraction({
+      onNotify: (event) => {
+        if (event.type === 'auth_url') resolveAuthUrl(event.url);
       },
-      onDeviceCode: () => {},
-      onPrompt: () => Promise.resolve('fallback-code'),
-      onSelect: () => Promise.resolve(''),
-    };
+    });
 
     globalThis.fetch = mockFetch(originalFetch);
 
-    const loginPromise = loginBerget(callbacks);
+    const loginPromise = loginBerget(interaction);
     loginPromise.catch(() => {});
 
     const authUrl = await authUrlPromise;
@@ -112,14 +140,11 @@ describe('OAuth & Token Refresh', () => {
       resolveAuthUrl = resolve;
     });
 
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => {
-        resolveAuthUrl(info.url);
+    const interaction = mockInteraction({
+      onNotify: (event) => {
+        if (event.type === 'auth_url') resolveAuthUrl(event.url);
       },
-      onDeviceCode: () => {},
-      onPrompt: () => Promise.resolve('fallback-code'),
-      onSelect: () => Promise.resolve(''),
-    };
+    });
 
     globalThis.fetch = mockFetch(originalFetch, {
       onToken: (body) => {
@@ -136,7 +161,7 @@ describe('OAuth & Token Refresh', () => {
     });
 
     const beforeLogin = Date.now();
-    const loginPromise = loginBerget(callbacks);
+    const loginPromise = loginBerget(interaction);
     loginPromise.catch(() => {});
 
     const authUrl = await authUrlPromise;
@@ -155,27 +180,24 @@ describe('OAuth & Token Refresh', () => {
     expect(capturedTokenBody).toContain('code_verifier=');
   });
 
-  test('login() falls back to onPrompt when callback server times out', async () => {
+  test('login() falls back to text prompt when callback server times out', async () => {
     process.env.BERGET_AUTH_URL = 'https://test-login.berget.ai';
     process.env.BERGET_OAUTH_TIMEOUT_MS = '200';
 
-    let promptCalled = false;
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: () => {},
-      onDeviceCode: () => {},
-      onPrompt: (prompt) => {
-        promptCalled = true;
-        expect(prompt.message).toContain('authorization code');
-        return Promise.resolve('fallback-code');
-      },
-      onSelect: () => Promise.resolve(''),
-    };
+    const interaction = mockInteraction({
+      // The timeout fallback: resolve the `text` prompt with a fallback code.
+      text: () => Promise.resolve('fallback-code'),
+    });
 
     globalThis.fetch = mockFetch(originalFetch);
 
-    const creds = await loginBerget(callbacks);
+    const creds = await loginBerget(interaction);
 
-    expect(promptCalled).toBe(true);
+    // The `text` fallback prompt was issued (not the `manual_code` race,
+    // which times out first), and the fallback code exchanged successfully.
+    const calls = interaction.prompt.mock.calls as [AuthPrompt][];
+    const textCall = calls.find((c) => c[0].type === 'text');
+    expect(textCall).toBeDefined();
     expect(creds.access).toBe('test-access-token');
   });
 
@@ -188,20 +210,17 @@ describe('OAuth & Token Refresh', () => {
       resolveAuthUrl = resolve;
     });
 
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => {
-        resolveAuthUrl(info.url);
+    const interaction = mockInteraction({
+      onNotify: (event) => {
+        if (event.type === 'auth_url') resolveAuthUrl(event.url);
       },
-      onDeviceCode: () => {},
-      onPrompt: () => Promise.resolve('test-auth-code'),
-      onSelect: () => Promise.resolve(''),
-    };
+    });
 
     globalThis.fetch = mockFetch(originalFetch, {
       onToken: () => new Response('Unauthorized', { status: 401 }),
     });
 
-    const loginPromise = loginBerget(callbacks);
+    const loginPromise = loginBerget(interaction);
     loginPromise.catch(() => {});
 
     const authUrl = await authUrlPromise;
@@ -210,36 +229,30 @@ describe('OAuth & Token Refresh', () => {
     await expect(loginPromise).rejects.toThrow('Token exchange failed');
   });
 
-  test('login() uses onManualCodeInput when provided', async () => {
+  test('login() uses manual_code prompt when callback never hits', async () => {
     process.env.BERGET_AUTH_URL = 'https://test-login.berget.ai';
     process.env.BERGET_OAUTH_TIMEOUT_MS = '1000';
 
-    let manualInputCalled = false;
+    let manualCodePrompted = false;
 
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: () => {
-        // auth URL resolution logic would go here
-      },
-      onDeviceCode: () => {},
-      onManualCodeInput: () => {
-        manualInputCalled = true;
+    const interaction = mockInteraction({
+      manualCode: () => {
+        manualCodePrompted = true;
         return Promise.resolve(
           'http://localhost:8787/callback?code=manual-code&state=will-be-ignored',
         );
       },
-      onPrompt: () => Promise.resolve('fallback-code'),
-      onSelect: () => Promise.resolve(''),
-    };
+    });
 
     globalThis.fetch = mockFetch(originalFetch);
 
-    const creds = await loginBerget(callbacks);
+    const creds = await loginBerget(interaction);
 
-    expect(manualInputCalled).toBe(true);
+    expect(manualCodePrompted).toBe(true);
     expect(creds.access).toBe('test-access-token');
   });
 
-  test('login() calls onProgress during token exchange', async () => {
+  test('login() calls notify with progress during token exchange', async () => {
     process.env.BERGET_AUTH_URL = 'https://test-login.berget.ai';
     process.env.BERGET_OAUTH_TIMEOUT_MS = '1000';
 
@@ -249,21 +262,16 @@ describe('OAuth & Token Refresh', () => {
     });
     let progressMessage = '';
 
-    const callbacks: OAuthLoginCallbacks = {
-      onAuth: (info) => {
-        resolveAuthUrl(info.url);
+    const interaction = mockInteraction({
+      onNotify: (event) => {
+        if (event.type === 'auth_url') resolveAuthUrl(event.url);
+        else if (event.type === 'progress') progressMessage = event.message;
       },
-      onDeviceCode: () => {},
-      onProgress: (message) => {
-        progressMessage = message;
-      },
-      onPrompt: () => Promise.resolve('test-auth-code'),
-      onSelect: () => Promise.resolve(''),
-    };
+    });
 
     globalThis.fetch = mockFetch(originalFetch);
 
-    const loginPromise = loginBerget(callbacks);
+    const loginPromise = loginBerget(interaction);
     loginPromise.catch(() => {});
 
     const authUrl = await authUrlPromise;
@@ -297,10 +305,11 @@ describe('OAuth & Token Refresh', () => {
       return Promise.resolve(new Response('Not found', { status: 404 }));
     };
 
-    const inputCreds: OAuthCredentials = {
+    const inputCreds: OAuthCredential = {
       access: 'old-access-token',
       expires: Date.now() - 1000,
       refresh: 'old-refresh-token',
+      type: 'oauth',
     };
 
     const beforeRefresh = Date.now();
@@ -321,10 +330,11 @@ describe('OAuth & Token Refresh', () => {
     globalThis.fetch = (): Promise<Response> =>
       Promise.resolve(new Response('Unauthorized', { status: 401 }));
 
-    const inputCreds: OAuthCredentials = {
+    const inputCreds: OAuthCredential = {
       access: 'old-access-token',
       expires: Date.now() - 1000,
       refresh: 'expired-refresh-token',
+      type: 'oauth',
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow('Token refresh failed: 401');
@@ -337,10 +347,11 @@ describe('OAuth & Token Refresh', () => {
       throw new Error('Network error');
     };
 
-    const inputCreds: OAuthCredentials = {
+    const inputCreds: OAuthCredential = {
       access: 'some-access-token',
       expires: Date.now() - 1000,
       refresh: 'some-refresh-token',
+      type: 'oauth',
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow('Network error');
@@ -364,10 +375,11 @@ describe('OAuth & Token Refresh', () => {
       );
     };
 
-    const creds: OAuthCredentials = {
+    const creds: OAuthCredential = {
       access: 'initial-access-token',
       expires: Date.now() - 1000,
       refresh: 'initial-refresh-token',
+      type: 'oauth',
     };
 
     const firstRefresh = await refreshBergetToken(creds);
@@ -390,10 +402,11 @@ describe('OAuth & Token Refresh', () => {
         }),
       );
 
-    const inputCreds: OAuthCredentials = {
+    const inputCreds: OAuthCredential = {
       access: 'old-access-token',
       expires: Date.now() - 1000,
       refresh: 'old-refresh-token',
+      type: 'oauth',
     };
 
     await expect(refreshBergetToken(inputCreds)).rejects.toThrow();

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import {
   fetchBergetModels,
-  mapModelToProviderConfig,
+  mapBergetModelToModel,
   MODEL_OVERRIDES,
   resolveInputUrl,
 } from '../index';
@@ -32,7 +32,7 @@ describe('Model Fetching & Mapping', () => {
     process.env = originalEnvironment;
   });
 
-  test('mapModelToProviderConfig maps API response to ProviderModelConfig', () => {
+  test('mapBergetModelToModel maps API response to Model', () => {
     const apiModel = {
       contextWindow: 128_000,
       id: 'meta-llama/Llama-3.3-70B-Instruct',
@@ -40,10 +40,15 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_001_5,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
 
     expect(result.id).toBe('meta-llama/Llama-3.3-70B-Instruct');
     expect(result.name).toBe('meta-llama/Llama-3.3-70B-Instruct');
+    expect(result.api).toBe('openai-completions');
+    expect(result.provider).toBe('berget');
+    // mapBergetModelToModel uses getInferenceUrl(), which defaults to the
+    // Berget inference endpoint when BERGET_INFERENCE_URL is unset.
+    expect(result.baseUrl).toBe('https://api.berget.ai/v1');
     expect(result.reasoning).toBe(false);
     expect(result.input).toEqual(['text']);
     expect(result.cost).toEqual({
@@ -130,7 +135,7 @@ describe('Model Fetching & Mapping', () => {
     await expect(fetchBergetModels()).rejects.toThrow('Failed to fetch models: 500');
   });
 
-  test('mapModelToProviderConfig uses DEFAULT_MAX_TOKENS when not provided by API', () => {
+  test('mapBergetModelToModel uses DEFAULT_MAX_TOKENS when not provided by API', () => {
     const apiModel = {
       contextWindow: 32_000,
       id: 'test-model',
@@ -138,11 +143,11 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
     expect(result.maxTokens).toBe(16_384);
   });
 
-  test('mapModelToProviderConfig calculates per-million-token costs correctly', () => {
+  test('mapBergetModelToModel calculates per-million-token costs correctly', () => {
     const apiModel = {
       contextWindow: 128_000,
       id: 'price-test',
@@ -150,14 +155,14 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_002,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
     expect(result.cost.input).toBe(0.5);
     expect(result.cost.output).toBe(2);
   });
 
   // --- Override tests ---
 
-  test('mapModelToProviderConfig applies vision override for known vision models', () => {
+  test('mapBergetModelToModel applies vision override for known vision models', () => {
     const apiModel = {
       contextWindow: 262_144,
       id: 'google/gemma-4-31B-it',
@@ -165,11 +170,11 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_000_5,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
     expect(result.input).toEqual(['text', 'image']);
   });
 
-  test('mapModelToProviderConfig applies reasoning override for known reasoning models', () => {
+  test('mapBergetModelToModel applies reasoning override for known reasoning models', () => {
     const apiModel = {
       contextWindow: 128_000,
       id: 'openai/gpt-oss-120b',
@@ -177,12 +182,12 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_000_75,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
     expect(result.reasoning).toBe(true);
     expect(result.input).toEqual(['text']);
   });
 
-  test('mapModelToProviderConfig defaults unknown models to text-only without reasoning', () => {
+  test('mapBergetModelToModel defaults unknown models to text-only without reasoning', () => {
     const apiModel = {
       contextWindow: 64_000,
       id: 'future-model-v99',
@@ -190,12 +195,12 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
     expect(result.input).toEqual(['text']);
     expect(result.reasoning).toBe(false);
   });
 
-  test('mapModelToProviderConfig preserves cost and contextWindow when applying override', () => {
+  test('mapBergetModelToModel preserves cost and contextWindow when applying override', () => {
     const apiModel = {
       contextWindow: 262_144,
       id: 'mistralai/Mistral-Medium-3.5-128B',
@@ -203,7 +208,7 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_005,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
 
     expect(result.input).toEqual(['text', 'image']);
     expect(result.reasoning).toBe(true);
@@ -213,7 +218,7 @@ describe('Model Fetching & Mapping', () => {
     expect(result.cost.cacheRead).toBe(0);
   });
 
-  test('mapModelToProviderConfig applies vision and reasoning override for moonshotai/Kimi-K2.6', () => {
+  test('mapBergetModelToModel applies vision and reasoning override for moonshotai/Kimi-K2.6', () => {
     const apiModel = {
       contextWindow: 256_000,
       id: 'moonshotai/Kimi-K2.6',
@@ -221,7 +226,7 @@ describe('Model Fetching & Mapping', () => {
       outputPricePerToken: 0.000_000_8,
     };
 
-    const result = mapModelToProviderConfig(apiModel);
+    const result = mapBergetModelToModel(apiModel);
 
     expect(result.input).toEqual(['text', 'image']);
     expect(result.reasoning).toBe(true);
@@ -240,7 +245,7 @@ describe('MODEL_OVERRIDES table (regression guard)', () => {
   // /v1/models/chat snapshot.
   for (const [id, override] of Object.entries(MODEL_OVERRIDES)) {
     test(`override for ${id} replaces the base defaults`, () => {
-      const result = mapModelToProviderConfig(minimalModel(id));
+      const result = mapBergetModelToModel(minimalModel(id));
       expect(result.id).toBe(id);
 
       for (const [key, value] of Object.entries(override)) {

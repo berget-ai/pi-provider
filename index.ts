@@ -830,6 +830,6 @@ function bergetOAuthAuth(): OAuthAuth {
     name: 'Berget AI',
     refresh: (credential: OAuthCredential, signal?: AbortSignal) =>
       refreshBergetToken(credential, signal),
-    toAuth: async (credential: OAuthCredential) => ({ apiKey: credential.access }),
+    toAuth: (credential: OAuthCredential) => Promise.resolve({ apiKey: credential.access }),
   };
 }
