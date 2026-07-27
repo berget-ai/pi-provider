@@ -14,6 +14,8 @@ This is **only achievable on `>= v0.81.0`** — the object-form `registerProvide
 
 All type shapes below were verified against the **installed `pi-ai@0.81.1` / `pi-coding-agent@0.81.1`** (matching v0.82.1's docs; v0.81.0 is the minimum).
 
+> **Note on finding these symbols:** `createProvider` lives in `models.ts` and `envApiKeyAuth` in `auth/helpers.ts`; the root `index.d.ts` reaches them via `export * from "./models.ts"` / `"./auth/helpers.ts"` (lines 21/17). A literal `grep createProvider index.d.ts` will therefore return nothing and wrongly suggest the symbol is missing — resolve with `tsc`, not `grep`.
+
 ### `createProvider(input: CreateProviderOptions): Provider<TApi>` — from `@earendil-works/pi-ai` (root)
 ```ts
 export interface CreateProviderOptions<TApi extends Api = Api> {
@@ -67,7 +69,7 @@ export interface AuthInteraction {
 | `callbacks.onDeviceCode({ userCode, verificationUri, … })` | `interaction.notify({ type: 'device_code', userCode, verificationUri, … })` |
 | `callbacks.onProgress?.(message)` | `interaction.notify({ type: 'progress', message })` |
 | `callbacks.onPrompt({ message, placeholder })` -> `Promise<string>` | `interaction.prompt({ type: 'text', message, placeholder })` -> `Promise<string>` |
-| `callbacks.onManualCodeInput?.()` -> `Promise<string>` (races the callback server) | `interaction.prompt({ type: 'manual_code', message, placeholder, signal })` — the per-prompt `signal` aborts the prompt when the callback server wins |
+| `callbacks.onManualCodeInput?.()` -> `Promise<string>` (races the callback server) | `interaction.prompt({ type: 'manual_code', message, placeholder, signal })` — `message` is **required** on every prompt variant including `manual_code`; the per-prompt `signal` aborts the prompt when the callback server wins |
 | `callbacks.onSelect?.({ message, options })` | `interaction.prompt({ type: 'select', message, options })` |
 | `callbacks.signal?` | `interaction.signal?` |
 
@@ -115,12 +117,18 @@ The WIP branch (`644cb4a`) changed `index.ts` imports, `MODEL_OVERRIDES` type, `
 2. **`MODEL_OVERRIDES`** — type changed to `Record<string, Partial<Model<'openai-completions'>>>` in WIP. Values unchanged.
 3. **`fetchBergetModels()`** — returns `Model<'openai-completions'>[]` (done in WIP; was `ProviderModelConfig[]`). `mapBergetModelToModel` (renamed from `mapModelToProviderConfig`) adds `api: 'openai-completions'`, `provider: 'berget'`, `baseUrl: getInferenceUrl()` (done in WIP).
 4. **OAuth: `loginBerget(interaction: AuthInteraction)`** — signature moved in WIP; notify/prompt calls migrated. ✅-ish — needs the `_collectAuthCode` rewrite re-examined (see #5).
-5. **`_collectAuthCode` — RESTORE the proven race logic.** The WIP commit replaced the carefully-designed `resolveManualCode` two-phase race with a simpler `manual_code` prompt + `AbortController` pattern **that has not been verified against `oauth-callback-errors.test.ts`**. **Before keeping it**, re-run `oauth-callback-errors.test.ts` mental model against the new code: the cases there are (state mismatch, missing code, network error, port-in-use, timeout, manual-input-wins, callback-wins). The cleanest path is **restore `resolveManualCode`** but change its signature from `OAuthLoginCallbacks` to `AuthInteraction` and translate: `onManualCodeInput()` -> `interaction.prompt({ type: 'manual_code', signal: perPromptSignal })`; keep the existing `Promise.race` against `waitForCode` + `getOAuthTimeoutMs()` timeout. This preserves the tested logic rather than rewriting it.
+5. **`_collectAuthCode` — a rewrite either way (see Risks #3 for the verified detail).** The WIP (`644cb4a`) rewrote `_collectAuthCode` to an `AbortController` + single `manual_code` prompt design that never calls `resolveManualCode`, leaving `resolveManualCode` as dead code (the 3 tests at `oauth-callback-errors.test.ts:94/121/163` import it by name). Two options, **both rewrites**:
+   - **Option B (recommended, port the race):** restore `resolveManualCode`'s `Promise.race([waitForCode, manualPromise, timeout])` structure under an `AuthInteraction` signature — `onManualCodeInput()` -> `interaction.prompt({ type: 'manual_code', message: '…', placeholder: '…', signal: perPromptSignal })` (**`message` is required on every prompt variant, including `manual_code`**), keep `getOAuthTimeoutMs()` timeout. Preserves the verified timeout/unhandled-rejection edge cases the 3 tests encode.
+   - **Option A (delete the dead code):** keep the WIP's `_collectAuthCode`, delete `resolveManualCode`, and delete/convert the 3 tests. Loses coverage of the late-manual-rejection contract.
+   The choice is made in Risks #3; either way the 4 `_collectAuthCode` tests (`:23/48/69/~213`) rewrite regardless (they mock `OAuthLoginCallbacks`).
 6. **`refreshBergetToken(credential: OAuthCredential, signal?): Promise<OAuthCredential>`** — signature change: add `signal?: AbortSignal` param (thread into the `fetch`); add `type: 'oauth'` to the returned object; declare return `Promise<OAuthCredential>`. (WIP changed the return type of `exchangeToken`; do the same here.)
-7. **Factory — wire `createProvider`** (NOT done in WIP; line ~824 still has the legacy `oauth: { login: loginBerget, … }` block):
+7. **Factory — wire `createProvider`** (NOT done in WIP; `644cb4a` line 807 still has the legacy `pi.registerProvider('berget', { oauth: { login: loginBerget, … } })` block). Per Risks #1, pass a **populated `models`** to preserve unauthenticated `/model` visibility (the `models: []` + `fetchModels`-only form leaves the catalog empty for logged-out users because `Models.refresh` early-returns when no credential resolves):
    ```ts
    export default async function (pi: ExtensionAPI): Promise<void> {
-     const models = await fetchBergetModels();  // <-- remove. createProvider takes [] + fetchModels; the factory should NOT pre-fetch (createProvider populates lazily). DECISION: keep a startup fetch for /model immediacy by passing models: await fetchBergetModels(), AND set fetchModels for refresh. Verify createProvider semantics for "models provided at construction time + fetchModels".
+     // Unconditional startup fetch preserves `pi --list-models` visibility
+     // for unauthenticated users (matches current 0.80.10 behaviour). A throw
+     // here aborts registration, same as today.
+     const models = await fetchBergetModels();
      pi.registerProvider(
        createProvider({
          id: 'berget',
@@ -130,14 +138,14 @@ The WIP branch (`644cb4a`) changed `index.ts` imports, `MODEL_OVERRIDES` type, `
            apiKey: envApiKeyAuth('Berget AI', ['BERGET_API_KEY']),
            oauth: bergetOAuthAuth(),  // see #8
          },
-         models,                     // or []  — verify
+         models,                                    // populated — see Risks #1
          fetchModels: (_ctx: RefreshModelsContext) => fetchBergetModels(),
          api: openAICompletionsApi(),
        }),
      );
    }
    ```
-   **Open question to resolve at implementation time:** whether `createProvider` requires `await modelRuntime` or accepts the provider object directly through `pi.registerProvider(provider)`. Verified `registerProvider(provider: Provider): void` exists in 0.81.1 `ExtensionAPI` (line 986), so `pi.registerProvider(createProvider({...}))` is the call.
+   **Verified:** `pi.registerProvider(createProvider({...}))` is the call — `registerProvider(provider: Provider): void` exists at `types.d.ts:986`, and the runtime dispatches the object form via `loader.js:303` -> `runtime.registerNativeProvider` -> `runner.js:211` `modelRegistry.registerProvider(provider)`. No `await modelRuntime` wrap is needed.
 8. **The `OAuthAuth` object** — wrap `loginBerget`/`refreshBergetToken`/`toAuth`:
    ```ts
    const bergetOAuthAuth = (): OAuthAuth => ({
@@ -155,11 +163,11 @@ Verified per-file impact (grep of migrating symbols):
 | File | Hits | Migration |
 |---|---|---|
 | `test/oauth.test.ts` | 49 | Rewrite mocks from `OAuthLoginCallbacks` (`onAuth`/`onPrompt`/`onProgress`/`onManualCodeInput`/`onSelect`) to `AuthInteraction` (`prompt`/`notify` discriminated unions). The `manual_code` prompt race replaces `onManualCodeInput`. |
-| `test/oauth-callback-errors.test.ts` | 56 | Same auth-callback migration. **Most fragile** — these are the error-path race tests; they're what caught the WIP `_collectAuthCode` rewrite being questionable. Restoring `resolveManualCode` first (index.ts #5) minimises churn here. |
+| `test/oauth-callback-errors.test.ts` | 56 | Same auth-callback migration. **Most fragile** — the error-path race tests. **7 tests total:** 4 `_collectAuthCode` tests (`:23/48/69/~213`) rewrite regardless (mock `OAuthLoginCallbacks`); 3 `resolveManualCode` tests (`:94/121/163`) import `resolveManualCode` by name and encode the timeout / late-rejection contracts. If Risks #3 Option B (port the race) is chosen, the 3 stay close to current intent; if Option A (delete), they go too. **Do not assume "restore first minimises churn"** — there is no minimal path (see Risks #3). |
 | `test/models.test.ts` | 18 | Rename `mapModelToProviderConfig` -> `mapBergetModelToModel`; add assertions for the new `api`/`provider`/`baseUrl` fields; `value: ProviderModelConfig` helpers become `Model<'openai-completions'>`. |
 | `test/token-refresh.test.ts` | 19 | `refreshBergetToken` signature (add `signal` param, `OAuthCredential` return); `getApiKey` removed (no `getApiKey` in the new flow). |
 | `test/token-validation.test.ts` | 5 | `exchangeToken`/`refreshBergetToken` now return `OAuthCredential` (add `type: 'oauth'` to expected + fixtures). |
-| `test/extension.test.ts` | 3 | The factory call changes — the mock `ExtensionAPI.registerProvider` receives a `Provider` object, not `(name, config)`. Re-assert `id`, `baseUrl`, `auth`, `fetchModels` presence, `api: openAICompletionsApi()`. The PR #22 `refreshModels` test (line ~209) may be obsolete or transform into a `fetchModels` test. |
+| `test/extension.test.ts` | 3 | The factory call changes — the mock `ExtensionAPI.registerProvider` receives a `Provider` object, not `(name, config)`. Re-assert `id`, `baseUrl`, `auth` (with `apiKey`+`oauth`), `typeof getModels === 'function'`, `typeof refreshModels === 'function'`, `api: openAICompletionsApi()`. The PR #22 `refreshModels` test (`:208`) **transforms, not deletes** (see Risks #5): assert `provider.refreshModels({ store: mockStore, … })` calls `fetchBergetModels` and writes via `mockStore.write`. |
 | `test/security-validation.test.ts` | 0 | **No changes** (uses only the unchanged PKCE / URL / HTML helpers). |
 
 ### Package metadata
@@ -170,14 +178,32 @@ Verified per-file impact (grep of migrating symbols):
 1. `npm install` (fresh — the WIP already has 0.81.1 in `node_modules`; a clean install reproduces).
 2. `npx tsc --noEmit` — exit 0. **This is the gate that was RED at the WIP commit**; bringing it green is the central task.
 3. `npm run lint` — clean (the `unicorn`/`sonarjs`/`tsdoc` rules apply to the new code too).
-4. `npm test` — all previously-green tests pass after their migration (target: back to all-green; the PR #22 added one test that becomes `fetchModels`-shaped).
+4. `npm test` — all previously-green tests pass after their migration (target: back to all-green; the PR #22 `refreshModels` test transforms per Risks #5).
+5. **Runtime smoke (the gate the unit tests can't cover — see Risks #1, #2, #4).** Against a real `pi` binary on the bumped floor: 
+   - (a) **Unauthenticated visibility:** with no stored credential and no `BERGET_API_KEY`, `pi --list-models` still shows the Berget catalog (validates the `models:[populated]` decision — Risks #1).
+   - (b) **Offline restart from store:** after `/login berget` and a full catalog refresh, `pi --list-models` with network blocked still lists the catalog from `context.store` (validates the persistence lifecycle — Risks #2).
+   - (c) **Env-vs-OAuth precedence:** with a stored OAuth credential AND `BERGET_API_KEY` set, observe which auth the inference request uses (validates Risks #4).
 
 ## Risks / open questions to resolve at implementation
 
-1. **`createProvider` + `models` interaction.** Decide whether the factory passes `models: await fetchBergetModels()` (populated at startup for `/model` immediacy) with `fetchModels` as the refresh path, or `models: []` with `fetchModels` as the sole source. The v0.82.1 README's llama.cpp example uses `models: []` + `fetchModels`; the local-server example uses `models: [...]` without `fetchModels`. Confirm which gives both startup-immediacy and refresh. **Recommendation:** `models: await fetchBergetModels()` + `fetchModels: () => fetchBergetModels()` — matches the current "startup fetch for immediacy + refresh for updates" split PR #22 established.
-2. **`apiKey` + `oauth` coexisting.** Confirm `envApiKeyAuth(name, ['BERGET_API_KEY'])` and a full `oauth` block on the same `ProviderAuth` work together — i.e. that pi uses the stored OAuth credential when present and falls back to the env key when not. The `ProviderAuth` type allows both; verify runtime preference with a manual smoke (`pi -e ./index.ts` + `/login berget`).
-3. **The `_collectAuthCode` rewrite in the WIP.** Prefer restoring `resolveManualCode` under `AuthInteraction` (index.ts #5) over the WIP's `AbortController` rewrite — the existing race logic is what `oauth-callback-errors.test.ts` encodes, so keeping it reduces test churn and preserves verified behaviour.
-4. **Scope guard.** The lazyparse `auth/oauth` shim and the local callback server are unchanged. Do not "improve" the PKCE, HTML, or socket-cleanup code — it's orthogonal to this migration and covered by `security-validation.test.ts`.
+All items below were investigated against the installed 0.81.1 source during this review (see commit history of this file for the investigation diff). **Verified** = confirmed in SDK source; **open** = needs a runtime smoke.
+
+1. **(Verified) `models: []` causes a `/model` regression for unauthenticated users — keep `models: [await fetchBergetModels()]`.** `Models.refresh()` per-provider early-returns when `resolveRefreshCredential()` returns `undefined` (`pi-ai/dist/models.js:88-89`), and the agent calls it at startup with `allowNetwork: false` (`agent-session-services.js:97`). With `createProvider({ models: [], fetchModels })`, an unauthenticated user (no stored OAuth credential, no `BERGET_API_KEY` env) therefore gets `refreshModels` **never called**, so `dynamicModels` stays `[]` and `getModels()` returns the empty baseline → **`pi --list-models` shows no Berget models**. Today (main, 0.80.10) the startup fetch at `index.ts:765` is **unconditional** (no auth gate), so the full catalog is visible before login. **Decision: pass `models: await fetchBergetModels()` (populated) + `fetchModels: () => fetchBergetModels()` (refresh)** to preserve unauthenticated visibility. NB the `currentModels()` merge overwrites baseline entries by id and appends new dynamic ids, so passing the *same* models in both buckets does **not** double-list (verified). The only subtlety: a model *removed* upstream lingers in the baseline until the next `createProvider` rebuild (acceptable — refresh still surfaces removals to `dynamicModels`, and the merged view hides baseline entries that a dynamic fetch replaced and retained). 
+  - **Task for the implementer:** confirm the startup fetch failure mode — today a failed `fetchBergetModels()` throws and aborts registration. With `createProvider`, `models` is required, so a failed startup fetch either (a) still throws pre-registration (current behaviour, safe) or (b) must fall back to `models: []` + rely on `fetchModels`. Prefer (a) to keep parity.
+
+2. **(Verified) The `fetchModels` persistence lifecycle has real precedent** in the host: `pi-coding-agent`'s `withRemoteCatalog` (`dist/core/remote-catalog-provider.js`) uses the identical `store.read → (cache check) → fetch → store.write` shape, including `context.store.write()` on 404/501 and on success (lines 75, 79, 92). So the read/store/write lifecycle `createProvider` performs for `fetchModels` is exercised in production for the built-in catalog overlay. **My earlier review overstated this risk as "zero precedent"; corrected.** Remaining open question:
+  - **(open) Timing of `createProvider`'s first `refreshModels` call for a `models:[populated]` provider.** With a populated `models` baseline AND a logged-in user, does the agent call `refresh` eagerly so `fetchModels` updates the catalog quickly, or lazily so the baseline serves until a stale-cache trigger? Verify with a runtime smoke (`pi update --models` after login).
+
+3. **(Verified) The `_collectAuthCode` design is a rewrite either way — frame it honestly.** Contrary to this doc's earlier framing, "restoring `resolveManualCode`" is itself a rewrite: under `AuthInteraction` there is no opt-in (the legacy `if (!callbacks.onManualCodeInput) return null` guard has no analogue — `manual_code` is always available via `prompt`). The verified state of the WIP (`644cb4a`) is: `_collectAuthCode` was rewritten to an `AbortController` + single `manual_code` prompt design that **never calls `resolveManualCode`**, and `resolveManualCode` is left as dead code (still `OAuthLoginCallbacks`, imported by name from `test/oauth-callback-errors.test.ts:5`). The choice is: 
+  - **Option A (rewrite-in-place):** keep the WIP's `AbortController` design, **delete the now-dead `resolveManualCode`** (the 3 tests that import it by name — lines 94/121/163 — must be deleted or converted to `_collectAuthCode`-level tests). The unhandled-rejection contract test (#121) becomes trivial (no dangling manual promise exists to reject late), so its *purpose* is lost unless re-expressed against `_collectAuthCode`.
+  - **Option B (port the race):** restore `resolveManualCode`'s `Promise.race([waitForCode, manualPromise, timeout])` structure under `AuthInteraction` signature (manual-input via `interaction.prompt({type:'manual_code', message, signal})`), keeping the 3 tests' assertions close to their current intent. More test churn to set up, but preserves the verified timeout/unhandled-rejection contracts.
+  - **Recommendation: Option B** — the 3 tests encode real edge cases (timeout cancels `cancelWait`; late manual rejection doesn't surface as unhandled) that Option A discards. Either way, the 4 `_collectAuthCode` tests (lines 23/48/69/~213) rewrite regardless (they mock `OAuthLoginCallbacks`). Closed as a design decision here; do **not** treat #5 in the impl-plan as "minimal restoration."
+
+4. **(Verified) `apiKey` + `oauth` coexisting.** The `ProviderAuth` type allows both (`{ apiKey?: ApiKeyAuth; oauth?: OAuthAuth }`). `envApiKeyAuth` resolves from env lazily, `oauth.toAuth` from a stored credential. `(open)` confirm runtime preference: does pi prefer a stored OAuth credential over an ambient env key? Verify with a manual smoke (`pi -e ./index.ts` + `/login berget` then without logging out set `BERGET_API_KEY` and observe which is used).
+
+5. **(Verified) The PR #22 `refreshModels` test must transform, not delete.** `test/extension.test.ts:208` asserts `capturedConfig!.refreshModels!()` on a captured legacy `ProviderConfig`. Under `createProvider`, there is no captured `ProviderConfig` — the mock `ExtensionAPI.registerProvider` receives a `Provider` object instead. The test should transform to: assert `createProvider`'s returned `Provider` has `typeof getModels === 'function'`, `typeof refreshModels === 'function'`, and that `refreshModels({ store: mockStore, ... })` calls `fetchBergetModels` and writes via `mockStore.write`. This preserves PR #22's live-discovery regression coverage (which must not be lost). The factory test at line 21 (`registerProvider is called with correct config`) re-asserts `id`/`baseUrl`/`auth`/`api` on the `Provider`.
+6. **(Verified) `token-refresh.test.ts` churn is signature-only, not behavioural.** Its `expiredCreds()` helper returns `OAuthCredentials` (no `type` field) and assertions touch only `.access`/`.refresh`/`.expires` — they do **not** assert `.type`. So adding `type: 'oauth'` to `refreshBergetToken`'s return breaks no assertions; the required edits are: (a) helper return type `OAuthCredentials` → `OAuthCredential` (and add `type: 'oauth'` to its object), (b) `refreshBergetToken` param/return type, (c) the `signal?: AbortSignal` arg (most of the 19 hits are call sites unaffected by the arg since it's optional). The `getApiKey` references in this file are to legacy `oauth.getApiKey` text in comments, not live code post-migration.
+7. **Scope guard.** The PKCE, URL-builder, base64, HTML, and callback-server socket-cleanup code is unchanged by this migration and covered by `test/security-validation.test.ts` (0 hits). Do not "improve" it. The only security-relevant change is that the `AuthInteraction`-form `login`/`manual_code` path must still guarantee the loopback server is closed in `finally` (already true in both design options above).
 
 ## Why this plan exists (do not delete)
 
