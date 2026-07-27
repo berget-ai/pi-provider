@@ -771,6 +771,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     baseUrl: getInferenceUrl(),
     models,
     name: 'Berget AI',
+    // Live model discovery: /model background refresh and `pi update --models`
+    // re-call fetchBergetModels so the catalog stays current without a Pi
+    // restart. The startup `models` above is still published immediately for
+    // `pi --list-models`. Persistence via `context.store` is intentionally not
+    // implemented: the store holds pi-ai `Model[]` while this returns
+    // `ProviderModelConfig[]`, and pi does not export the converter at this
+    // SDK level. See pi v0.80.8 — persistence is optional by design.
+    refreshModels: () => fetchBergetModels(),
     oauth: {
       getApiKey: (cred) => cred.access,
       login: loginBerget,
