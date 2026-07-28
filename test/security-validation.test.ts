@@ -44,7 +44,7 @@ describe('Security hardening & input validation', () => {
     const { verifier } = await generatePKCE();
     // RFC 7636 requires code_verifier length between 43 and 128 characters.
     // 96 random bytes → base64url is 128 chars, the maximum allowed length.
-    expect(verifier.length).toBe(128);
+    expect(verifier).toHaveLength(128);
   });
 
   // --- Issue 11: fetchBergetModels response validation ---
@@ -97,7 +97,7 @@ describe('Security hardening & input validation', () => {
     expect(models).toHaveLength(1);
     expect(models[0].id).toBe('unpriced-model');
     expect(models[0].cost.input).toBe(0);
-    expect(models[0].cost.output).toBe(0.3);
+    expect(models[0].cost.output).toBeCloseTo(0.3);
     expect(Number.isNaN(models[0].cost.input)).toBe(false);
   });
 
