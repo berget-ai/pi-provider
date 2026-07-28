@@ -1,0 +1,56 @@
+version: 2
+
+updates:
+  # npm/pnpm dependencies
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # Security advisories are always auto-bundled by Dependabot regardless of
+      # this config; this groups routine non-security version bumps.
+      eslint:
+        patterns:
+          - eslint
+          - eslint-config-prettier
+          - eslint-plugin-prettier
+          - eslint-plugin-promise
+          - eslint-plugin-sonarjs
+          - eslint-plugin-tsdoc
+          - eslint-plugin-unicorn
+          - typescript-eslint
+          - '@vitest/eslint-plugin'
+      vitest:
+        patterns:
+          - vitest
+          - '@vitest/*'
+      typescript:
+        patterns:
+          - typescript
+      berget:
+        patterns:
+          - '@earendil-works/*'
+    ignore:
+      # Pin majors; Dependabot still opens PRs for minor + patch within range.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      - dependency-name: vitest
+        update-types: [version-update:semver-major]
+      - dependency-name: eslint-plugin-unicorn
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: build(deps)
+      include: scope
+
+  # GitHub Actions versions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build(ci)
+      include: scope

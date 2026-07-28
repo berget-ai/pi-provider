@@ -27,9 +27,11 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "test": "vitest run",
     "lint": "eslint .",
+    "prepublishOnly": "pnpm install --frozen-lockfile",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

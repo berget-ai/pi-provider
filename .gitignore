@@ -1,4 +1,10 @@
 node_modules/
+
+# Lockfiles — pnpm is the canonical package manager (see packageManager field).
+# Ignore the npm lockfile so it can't silently re-appear and cause drift (it
+# previously held a vulnerable vitest 3.2.4 while pnpm-lock.yaml was clean).
+package-lock.json
+
 e2e/.auth/
 test-results/
 debug-*.ts
