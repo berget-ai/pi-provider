@@ -1,4 +1,4 @@
-import type { OAuthCredentials } from '@earendil-works/pi-ai';
+import type { OAuthCredential } from '@earendil-works/pi-ai';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
@@ -73,10 +73,11 @@ describe('Token JSON shape validation', () => {
     globalThis.fetch = (): Promise<Response> =>
       Promise.resolve(Response.json({ expires_in: 300, refresh_token: 'ok' }, { status: 200 }));
 
-    const credentials: OAuthCredentials = {
+    const credentials: OAuthCredential = {
       access: 'old',
       expires: Date.now() - 1000,
       refresh: 'refresh',
+      type: 'oauth',
     };
 
     await expect(refreshBergetToken(credentials)).rejects.toThrow(
@@ -92,10 +93,11 @@ describe('Token JSON shape validation', () => {
         Response.json({ expires_in: 300, refresh_token: 'rotated', token: 'new' }, { status: 200 }),
       );
 
-    const credentials: OAuthCredentials = {
+    const credentials: OAuthCredential = {
       access: 'old',
       expires: Date.now() - 1000,
       refresh: 'refresh',
+      type: 'oauth',
     };
 
     const result = await refreshBergetToken(credentials);

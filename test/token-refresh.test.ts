@@ -1,4 +1,4 @@
-import type { OAuthCredentials } from '@earendil-works/pi-ai';
+import type { OAuthCredential } from '@earendil-works/pi-ai';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
@@ -21,11 +21,12 @@ const bergetRefreshResponse = (
   );
 };
 
-function expiredCreds(refresh = 'initial-refresh-token'): OAuthCredentials {
+function expiredCreds(refresh = 'initial-refresh-token'): OAuthCredential {
   return {
     access: 'old-access-token',
     expires: Date.now() - 1000,
     refresh,
+    type: 'oauth',
   };
 }
 

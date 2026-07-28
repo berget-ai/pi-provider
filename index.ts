@@ -9,8 +9,16 @@
  *
  * @packageDocumentation
  */
-import type { OAuthCredentials, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
-import type { ExtensionAPI, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
+import {
+  createProvider,
+  envApiKeyAuth,
+  type AuthInteraction,
+  type Model,
+  type OAuthAuth,
+  type OAuthCredential,
+} from '@earendil-works/pi-ai';
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
 import * as http from 'node:http';
@@ -38,8 +46,12 @@ function getOAuthTimeoutMs(): number {
  * Manual capability overrides for models whose `/v1/models/chat` entry is
  * wrong or incomplete. Keys are model ids; Hugging Face model cards are the
  * source of truth for reasoning, input modalities, and `maxTokens`.
+ *
+ * Override fragments target the `Model<'openai-completions'>` shape (api,
+ * provider, and baseUrl are filled in by mapBergetModelToModel). Only the
+ * capability fields a given model actually needs to override are set.
  */
-export const MODEL_OVERRIDES: Record<string, Partial<ProviderModelConfig>> = {
+export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>>> = {
   'google/gemma-4-31B-it': {
     input: ['text', 'image'],
     reasoning: true,
@@ -152,8 +164,8 @@ interface CallbackResult {
 // === Model Fetching & Mapping ===
 
 /**
- * Fetch the Berget chat model list and map each entry to a
- * {@link ProviderModelConfig}.
+ * Fetch the Berget chat model list and map each entry to a pi-ai
+ * `Model<'openai-completions'>` for provider registration.
  *
  * @remarks - `GET /v1/models/chat` against {@link getApiUrl}. Numeric fields are
  *          coerced to 0 rather than failing — they're informational, and a bad
@@ -163,7 +175,7 @@ interface CallbackResult {
  *         `Malformed model list response: ...` when the body isn't an object
  *         with a `models` array.
  */
-export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
+export async function fetchBergetModels(): Promise<Model<'openai-completions'>[]> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/models/chat`);
   if (!response.ok) {
@@ -185,19 +197,22 @@ export async function fetchBergetModels(): Promise<ProviderModelConfig[]> {
   return raw
     .map((entry) => coerceBergetModel(entry))
     .filter((model): model is BergetModel => model !== null)
-    .map((model) => mapModelToProviderConfig(model));
+    .map((model) => mapBergetModelToModel(model));
 }
 
 /**
- * Map a {@link BergetModel} to Pi's {@link ProviderModelConfig}.
+ * Map a {@link BergetModel} to a pi-ai `Model<'openai-completions'>`.
  *
  * @remarks Pricing is per-token in the API but per-million-token in Pi, so
  *          `input`/`output` are scaled by `1e6`. Defaults to `text`-only input,
- *          `reasoning: false`, and `DEFAULT_MAX_TOKENS`. Per-id
- *          {@link MODEL_OVERRIDES} are spread last and win on conflict.
+ *          `reasoning: false`, and `DEFAULT_MAX_TOKENS`. The provider identity
+ *          (`api`, `provider`, `baseUrl`) is fixed for every Berget model.
+ *          Per-id {@link MODEL_OVERRIDES} are spread last and win on conflict.
  */
-export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfig {
-  const base: ProviderModelConfig = {
+export function mapBergetModelToModel(model: BergetModel): Model<'openai-completions'> {
+  const base: Model<'openai-completions'> = {
+    api: 'openai-completions',
+    baseUrl: getInferenceUrl(),
     compat: {
       supportsDeveloperRole: false,
     },
@@ -212,6 +227,7 @@ export function mapModelToProviderConfig(model: BergetModel): ProviderModelConfi
     input: ['text'],
     maxTokens: DEFAULT_MAX_TOKENS,
     name: model.id,
+    provider: 'berget',
     reasoning: false,
   };
 
@@ -250,19 +266,19 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
  * @returns Access/refresh credentials with an expiry timestamp.
  * @throws `Missing authorization code` if no code is received.
  */
-export async function loginBerget(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+export async function loginBerget(interaction: AuthInteraction): Promise<OAuthCredential> {
   const { challenge, verifier } = await generatePKCE();
   const state = generateRandomString();
 
   const authUrl = buildAuthUrl(challenge, state);
 
-  const code = await collectAuthCode(callbacks, authUrl, state);
+  const code = await collectAuthCode(interaction, authUrl, state);
 
   if (!code) {
     throw new Error('Missing authorization code');
   }
 
-  callbacks.onProgress?.('Exchanging authorization code for tokens...');
+  interaction.notify({ message: 'Exchanging authorization code for tokens...', type: 'progress' });
 
   return exchangeToken(code, verifier);
 }
@@ -314,7 +330,7 @@ export async function generatePKCE(): Promise<{ challenge: string; verifier: str
  * @throws `Token exchange failed: <status> <body>` on non-2xx.
  * @throws `Invalid token response: ...` when the body isn't a valid Keycloak token response.
  */
-export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredentials> {
+export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredential> {
   const authBaseUrl = getAuthUrl();
   const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
     body: new URLSearchParams({
@@ -344,6 +360,7 @@ export async function exchangeToken(code: string, verifier: string): Promise<OAu
     access: tokenData.access_token,
     expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
     refresh: tokenData.refresh_token,
+    type: 'oauth',
   };
 }
 
@@ -357,11 +374,11 @@ export async function exchangeToken(code: string, verifier: string): Promise<OAu
  * @returns The code, or `null` to trigger `onPrompt` fallback.
  */
 export async function collectAuthCode(
-  callbacks: OAuthLoginCallbacks,
+  interaction: AuthInteraction,
   authUrl: string,
   state: string,
 ): Promise<null | string> {
-  return _collectAuthCode(callbacks, authUrl, state, startCallbackServer);
+  return _collectAuthCode(interaction, authUrl, state, startCallbackServer);
 }
 
 /**
@@ -371,7 +388,7 @@ export async function collectAuthCode(
  *           `serverFactory` in place of {@link startCallbackServer}.
  */
 export async function _collectAuthCode(
-  callbacks: OAuthLoginCallbacks,
+  interaction: AuthInteraction,
   authUrl: string,
   state: string,
   serverFactory: typeof startCallbackServer,
@@ -381,20 +398,21 @@ export async function _collectAuthCode(
   try {
     callbackServer = await serverFactory(state);
 
-    // `onAuth` is typed `void`, but provider implementations may return a Promise;
-    // awaiting via Promise.resolve preserves async-rejection propagation.
-    const authInfo = {
+    // Surface the auth URL. `notify` is fire-and-forget for UI events.
+    interaction.notify({
       instructions:
         'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
+      type: 'auth_url',
       url: authUrl,
-    };
-    // eslint-disable-next-line @typescript-eslint/no-confusing-void-expression
-    await Promise.resolve(callbacks.onAuth(authInfo));
+    });
 
-    let code: null | string = null;
-    if (callbacks.onManualCodeInput) {
-      code = await resolveManualCode(callbackServer, callbacks);
-    } else {
+    // Race the loopback callback server against a `manual_code` prompt.
+    // `resolveManualCode` runs the prompt concurrently with `waitForCode` and
+    // times out via `getOAuthTimeoutMs()`, preserving the two-phase race that
+    // `oauth-callback-errors.test.ts` encodes.
+    let code: null | string = await resolveManualCode(callbackServer, interaction);
+
+    if (!code) {
       const result = await callbackServer.waitForCode();
       code = result?.code ?? null;
     }
@@ -404,31 +422,30 @@ export async function _collectAuthCode(
     callbackServer?.close();
   }
 
-  return callbacks.onPrompt({
+  return interaction.prompt({
     message: 'Enter the authorization code from the callback URL',
     placeholder: 'Authorization code',
+    type: 'text',
   });
 }
 
 /**
  * Resolve a code from manual input, racing the callback server.
  *
- * Runs `onManualCodeInput` concurrently with {@link startCallbackServer}'s
+ * Runs a `manual_code` prompt concurrently with {@link startCallbackServer}'s
  * `waitForCode`; a manual code cancels the server wait and vice versa. Phase 2
  * times out via {@link getOAuthTimeoutMs}.
  *
  * @remarks The manual-input promise is intentionally left to settle in the
  *          background if phase 1 returns via the callback — it only mutates
  *          locals and calls `cancelWait`, which are no-ops by then.
- * @returns The code, `null` to fall through to `onPrompt` (timeout/no input),
- *          or rethrows the manual-input rejection.
+ * @returns The code, `null` to fall through to the `text` prompt (timeout/no
+ *          input), or rethrows the manual-input rejection.
  */
 export async function resolveManualCode(
   callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
-  callbacks: OAuthLoginCallbacks,
+  interaction: AuthInteraction,
 ): Promise<null | string> {
-  if (!callbacks.onManualCodeInput) return null;
-
   let manualInput: string | undefined;
   let manualError: Error | undefined;
 
@@ -437,11 +454,15 @@ export async function resolveManualCode(
   // unhandled rejection. NB: if phase 1 returns via the callback, this promise
   // is intentionally left to settle in the background — it only mutates locals
   // and calls cancelWait, which are no-ops by then. We cannot await it before
-  // returning because onManualCodeInput may resolve/reject only after the
-  // caller has moved on.
-  const manualPromise = callbacks
-    .onManualCodeInput()
-    .then((input) => {
+  // returning because the prompt may resolve/reject only after the caller has
+  // moved on.
+  const manualPromise = interaction
+    .prompt({
+      message: 'Enter the authorization code from the callback URL',
+      placeholder: 'Authorization code',
+      type: 'manual_code',
+    })
+    .then((input: string) => {
       manualInput = input;
       callbackServer.cancelWait();
       return input;
@@ -466,7 +487,7 @@ export async function resolveManualCode(
   const winner = await Promise.race([manualPromise, timeoutPromise]);
 
   if (winner === null) {
-    // Timeout — fall through to onPrompt in collectAuthCode
+    // Timeout — fall through to the text prompt in _collectAuthCode.
     return null;
   }
 
@@ -503,7 +524,10 @@ export function parseCodeFromInput(input: string): string {
  * @throws `Token refresh failed: <status> <body>` on non-2xx.
  * @throws `Invalid token response: ...` when the body isn't a valid Berget token response.
  */
-export async function refreshBergetToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+export async function refreshBergetToken(
+  credentials: OAuthCredential,
+  signal?: AbortSignal,
+): Promise<OAuthCredential> {
   const apiUrl = getApiUrl();
   const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
     body: JSON.stringify({
@@ -511,6 +535,7 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     }),
     headers: { 'Content-Type': 'application/json' },
     method: 'POST',
+    signal,
   });
 
   if (!response.ok) {
@@ -529,6 +554,7 @@ export async function refreshBergetToken(credentials: OAuthCredentials): Promise
     access: data.token,
     expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
     refresh: data.refresh_token || credentials.refresh,
+    type: 'oauth',
   };
 }
 
@@ -762,28 +788,48 @@ function getInferenceUrl(): string {
  * streaming, the inference base URL, and the OAuth login/refresh functions.
  */
 export default async function (pi: ExtensionAPI): Promise<void> {
+  // Unconditional startup fetch preserves `pi --list-models` visibility for
+  // unauthenticated users (matches the pre-migration behaviour). A throw here
+  // aborts registration, same as before. See docs/persistence-migration.md
+  // Risks #1 — `createProvider({ models: [] })` would leave the catalog empty
+  // for logged-out users because `Models.refresh` skips providers with no
+  // resolved credential.
   const models = await fetchBergetModels();
 
-  pi.registerProvider('berget', {
-    api: 'openai-completions',
-    apiKey: '$BERGET_API_KEY',
-    authHeader: true,
-    baseUrl: getInferenceUrl(),
-    models,
-    name: 'Berget AI',
-    // Live model discovery: /model background refresh and `pi update --models`
-    // re-call fetchBergetModels so the catalog stays current without a Pi
-    // restart. The startup `models` above is still published immediately for
-    // `pi --list-models`. Persistence via `context.store` is intentionally not
-    // implemented: the store holds pi-ai `Model[]` while this returns
-    // `ProviderModelConfig[]`, and pi does not export the converter at this
-    // SDK level. See pi v0.80.8 — persistence is optional by design.
-    refreshModels: () => fetchBergetModels(),
-    oauth: {
-      getApiKey: (cred) => cred.access,
-      login: loginBerget,
+  pi.registerProvider(
+    createProvider({
+      api: openAICompletionsApi(),
+      auth: {
+        apiKey: envApiKeyAuth('Berget AI', ['BERGET_API_KEY']),
+        oauth: bergetOAuthAuth(),
+      },
+      baseUrl: getInferenceUrl(),
+      // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
+      // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
+      // can restore/persist it through the store — closing the shape gap that
+      // blocked persistence on the legacy `ProviderConfig` form (PR #22).
+      fetchModels: () => fetchBergetModels(),
+      id: 'berget',
+      models,
       name: 'Berget AI',
-      refreshToken: refreshBergetToken,
-    },
-  });
+    }),
+  );
+}
+
+/**
+ * Build the Berget {@link OAuthAuth} by adapting the PKCE login/refresh flow to
+ * `createProvider`'s `login`/`refresh`/`toAuth` shape.
+ *
+ * @remarks `toAuth` replaces the legacy `getApiKey: (cred) => cred.access` —
+ *          the stored OAuth access token becomes the request `apiKey`.
+ */
+function bergetOAuthAuth(): OAuthAuth {
+  return {
+    login: (interaction: AuthInteraction) => loginBerget(interaction),
+    loginLabel: 'Sign in with Berget Code',
+    name: 'Berget AI',
+    refresh: (credential: OAuthCredential, signal?: AbortSignal) =>
+      refreshBergetToken(credential, signal),
+    toAuth: (credential: OAuthCredential) => Promise.resolve({ apiKey: credential.access }),
+  };
 }
