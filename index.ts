@@ -105,6 +105,20 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: null,
     },
   },
+  'moonshotai/Kimi-K3': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Kimi K3 keeps K2's binary thinking.type (enabled/disabled) — only off/high.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
   'openai/gpt-oss-120b': {
     reasoning: true,
     // gpt-oss passes reasoning_effort through to vLLM; expose the ladder.
