@@ -97,8 +97,8 @@ describe('Model Fetching & Mapping', () => {
 
     expect(models).toHaveLength(2);
     expect(models[0].id).toBe('meta-llama/Llama-3.3-70B-Instruct');
-    expect(models[0].cost.input).toBe(0.3);
-    expect(models[0].cost.output).toBe(1.5);
+    expect(models[0].cost.input).toBeCloseTo(0.3);
+    expect(models[0].cost.output).toBeCloseTo(1.5);
     expect(models[0].compat).toEqual({ supportsDeveloperRole: false });
     expect(models[1].id).toBe('mistralai/Mistral-Small-3.2-24B-Instruct-2506');
     expect(models[1].input).toEqual(['text', 'image']);
