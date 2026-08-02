@@ -2,7 +2,7 @@ import type { OAuthCredential } from '@earendil-works/pi-ai';
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
-import { refreshBergetToken, resolveInputUrl } from '../index';
+import { parseRetryAfterMs, refreshBergetToken, resolveInputUrl } from '../index';
 
 const EXPIRY_BUFFER_MS = 60 * 1000;
 
@@ -33,6 +33,21 @@ function expiredCreds(refresh = 'initial-refresh-token'): OAuthCredential {
 function isBergetRefreshUrl(url: string): boolean {
   return url.includes('/v1/auth/refresh');
 }
+
+const rateLimitResponse = (retryAfter?: string): Response =>
+  Response.json(
+    {
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: 'Too many authentication attempts, please try again later',
+        type: 'rate_limit_exceeded',
+      },
+    },
+    {
+      headers: retryAfter ? { 'Retry-After': retryAfter } : {},
+      status: 429,
+    },
+  );
 
 function parseRefreshBody(init?: RequestInit): { refresh_token: string } {
   const body = init?.body;
@@ -157,6 +172,99 @@ describe('Token Refresh Flow - Berget API', () => {
     );
   });
 
+  test('retries on 429 rate limit and succeeds once the limiter clears', async () => {
+    let callCount = 0;
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
+        return Promise.resolve(new Response('Not found', { status: 404 }));
+      }
+      callCount++;
+      if (callCount <= 2) return Promise.resolve(rateLimitResponse('0'));
+      return Promise.resolve(bergetRefreshResponse('access-after-retry', 'rotated', 300));
+    };
+
+    const result = await refreshBergetToken(expiredCreds('token'));
+
+    expect(callCount).toBe(3);
+    expect(result.access).toBe('access-after-retry');
+  });
+
+  test('throws after exhausting retries on persistent 429', async () => {
+    let callCount = 0;
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
+        return Promise.resolve(new Response('Not found', { status: 404 }));
+      }
+      callCount++;
+      return Promise.resolve(rateLimitResponse('0'));
+    };
+
+    await expect(refreshBergetToken(expiredCreds('token'))).rejects.toThrow(
+      'Token refresh failed: 429',
+    );
+    expect(callCount).toBe(3);
+  });
+
+  test('fails fast when Retry-After exceeds the cap (long rate-limit window)', async () => {
+    let callCount = 0;
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
+        return Promise.resolve(new Response('Not found', { status: 404 }));
+      }
+      callCount++;
+      // The auth rate limiter asks for the full 30-minute window.
+      return Promise.resolve(rateLimitResponse('1800'));
+    };
+
+    await expect(refreshBergetToken(expiredCreds('token'))).rejects.toThrow(
+      'Token refresh failed: 429',
+    );
+    expect(callCount).toBe(1);
+  });
+
+  test('retries on 5xx server errors, does not retry other 4xx', async () => {
+    let callCount = 0;
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
+        return Promise.resolve(new Response('Not found', { status: 404 }));
+      }
+      callCount++;
+      return Promise.resolve(new Response('Bad Gateway', { status: 502 }));
+    };
+
+    await expect(refreshBergetToken(expiredCreds('token'))).rejects.toThrow(
+      'Token refresh failed: 502',
+    );
+    expect(callCount).toBe(3);
+
+    callCount = 0;
+    globalThis.fetch = (): Promise<Response> => {
+      callCount++;
+      return Promise.resolve(Response.json({ error: 'invalid_grant' }, { status: 400 }));
+    };
+
+    await expect(refreshBergetToken(expiredCreds('token'))).rejects.toThrow(
+      'Token refresh failed: 400',
+    );
+    expect(callCount).toBe(1);
+  });
+
+  test('aborts between retries when the signal fires', async () => {
+    let callCount = 0;
+    const controller = new AbortController();
+    globalThis.fetch = (input: RequestInfo | URL): Promise<Response> => {
+      if (!isBergetRefreshUrl(resolveInputUrl(input))) {
+        return Promise.resolve(new Response('Not found', { status: 404 }));
+      }
+      callCount++;
+      controller.abort();
+      return Promise.resolve(rateLimitResponse('30'));
+    };
+
+    await expect(refreshBergetToken(expiredCreds('token'), controller.signal)).rejects.toThrow();
+    expect(callCount).toBe(1);
+  });
+
   test('refresh throws on 401 from Berget API', async () => {
     globalThis.fetch = (): Promise<Response> =>
       Promise.resolve(new Response('Unauthorized', { status: 401 }));
@@ -222,6 +330,30 @@ describe('Token Refresh Flow - Berget API', () => {
 
     await refreshBergetToken(expiredCreds('token'));
     expect(capturedUrl).toContain('custom-api.example.com/v1/auth/refresh');
+  });
+
+  describe('parseRetryAfterMs', () => {
+    test('parses delay-seconds', () => {
+      expect(parseRetryAfterMs('0')).toBe(0);
+      expect(parseRetryAfterMs('30')).toBe(30_000);
+    });
+
+    test('parses HTTP-date relative to now', () => {
+      const date = new Date(Date.now() + 5000).toUTCString();
+      const ms = parseRetryAfterMs(date);
+      expect(ms).toBeGreaterThan(0);
+      expect(ms).toBeLessThanOrEqual(5000);
+    });
+
+    test('clamps past HTTP-dates to zero', () => {
+      expect(parseRetryAfterMs(new Date(Date.now() - 5000).toUTCString())).toBe(0);
+    });
+
+    test('returns undefined for missing or invalid headers', () => {
+      expect(parseRetryAfterMs(null)).toBeUndefined();
+      expect(parseRetryAfterMs('')).toBeUndefined();
+      expect(parseRetryAfterMs('not-a-date')).toBeUndefined();
+    });
   });
 
   test('Berget refresh token rotation: each refresh returns a new refresh_token that works on next call', async () => {

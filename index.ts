@@ -529,13 +529,27 @@ export function parseCodeFromInput(input: string): string {
 
 // === Token Refresh ===
 
+// Refresh retry policy for transient failures (429 rate limit, 5xx server
+// errors). Total attempts (initial + retries).
+const REFRESH_MAX_ATTEMPTS = 3;
+const REFRESH_BACKOFF_BASE_MS = 1000;
+// The auth rate limiter can ask for waits far beyond a usable UX (its window
+// is 30 minutes), so Retry-After hints above this cap are not honored — the
+// refresh fails fast instead of blocking the agent.
+const REFRESH_RETRY_AFTER_CAP_MS = 60 * 1000;
+
 /**
  * Refresh an expired access token via `POST /v1/auth/refresh`.
  *
  * @remarks Same `ACCESS_TOKEN_EXPIRY_BUFFER_MS` (60 s) expiry buffer as
  *          {@link exchangeToken}. When the server omits a new refresh token, the
  *          previous one is reused (`data.refresh_token || credentials.refresh`).
- * @throws `Token refresh failed: <status> <body>` on non-2xx.
+ *          Retries up to {@link REFRESH_MAX_ATTEMPTS} times on transient
+ *          failures (HTTP 429 and 5xx), honoring a bounded `Retry-After`
+ *          header and otherwise using exponential backoff. 4xx responses other
+ *          than 429 are permanent and fail immediately.
+ * @throws `Token refresh failed: <status> <body>` on a non-retryable status or
+ *         after exhausting retries.
  * @throws `Invalid token response: ...` when the body isn't a valid Berget token response.
  */
 export async function refreshBergetToken(
@@ -543,33 +557,122 @@ export async function refreshBergetToken(
   signal?: AbortSignal,
 ): Promise<OAuthCredential> {
   const apiUrl = getApiUrl();
-  const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
-    body: JSON.stringify({
-      refresh_token: credentials.refresh,
-    }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-    signal,
-  });
 
-  if (!response.ok) {
+  for (let attempt = 1; ; attempt++) {
+    throwIfAborted(signal);
+
+    const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
+      body: JSON.stringify({
+        refresh_token: credentials.refresh,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      signal,
+    });
+
+    if (response.ok) {
+      const data: unknown = await response.json();
+      if (!isBergetTokenResponse(data)) {
+        throw new Error(
+          'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
+        );
+      }
+
+      return {
+        access: data.token,
+        expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+        refresh: data.refresh_token || credentials.refresh,
+        type: 'oauth',
+      };
+    }
+
     const errorText = await response.text();
-    throw new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
-  }
+    const error = new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
 
-  const data: unknown = await response.json();
-  if (!isBergetTokenResponse(data)) {
-    throw new Error(
-      'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
-    );
-  }
+    if (!isRetryableRefreshStatus(response.status) || attempt >= REFRESH_MAX_ATTEMPTS) {
+      throw error;
+    }
 
-  return {
-    access: data.token,
-    expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
-    refresh: data.refresh_token || credentials.refresh,
-    type: 'oauth',
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'));
+    // A Retry-After beyond the cap means the server wants a wait longer than a
+    // user can tolerate (e.g. the 30-minute auth rate-limit window) — fail fast.
+    if (retryAfterMs !== undefined && retryAfterMs > REFRESH_RETRY_AFTER_CAP_MS) {
+      throw error;
+    }
+
+    await waitForRetry(retryAfterMs ?? REFRESH_BACKOFF_BASE_MS * 2 ** (attempt - 1), signal);
+  }
+}
+
+// Milliseconds of setTimeout/setInterval precision Node coalesces — a wait
+// scheduled this close to now resolves effectively immediately.
+const IMMEDIATE_WAIT_MS = 1;
+
+function scheduledWait(ms: number, callback: () => void): () => void {
+  if (ms <= IMMEDIATE_WAIT_MS) {
+    const immediate = setImmediate(callback);
+    return () => {
+      clearImmediate(immediate);
+    };
+  }
+  const timer = setTimeout(callback, ms);
+  return () => {
+    clearTimeout(timer);
   };
+}
+
+function isRetryableRefreshStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason: unknown = signal.reason;
+  throw reason instanceof Error ? reason : new Error('Token refresh aborted');
+}
+
+/**
+ * Parse a `Retry-After` header (delay-seconds or HTTP-date) into milliseconds.
+ * Returns `undefined` when the header is missing or unparseable.
+ */
+export function parseRetryAfterMs(header: null | string): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // The signal may have fired before this wait started (an already-aborted
+    // signal never emits 'abort' again), so check synchronously on entry.
+    if (signal?.aborted) {
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
+    const onAbort = (): void => {
+      cancel();
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    // setImmediate for sub-millisecond waits: vitest fake timers hang on
+    // zero-delay setTimeout callbacks (never drained without an explicit
+    // advanceTimersByTime), and setTimeout(0) is coalesced to ~1 ms anyway.
+    const cancel = scheduledWait(ms, () => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // === Token Response Validation ===
