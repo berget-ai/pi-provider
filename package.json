@@ -57,7 +57,7 @@
     "@earendil-works/pi-ai": "^0.81.1",
     "@earendil-works/pi-coding-agent": "^0.81.1",
     "@types/node": "^26.1.1",
-    "@vitest/eslint-plugin": "^1.6.17",
+    "@vitest/eslint-plugin": "^1.6.26",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.5",
@@ -70,7 +70,7 @@
     "lint-staged": "^17.0.3",
     "prettier": "^3.8.3",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.59.3",
+    "typescript-eslint": "^8.66.0",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
