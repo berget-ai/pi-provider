@@ -25,7 +25,7 @@ import * as http from 'node:http';
 
 // === Constants ===
 
-const DEFAULT_MAX_TOKENS = 16_384;
+const DEFAULT_MAX_TOKENS = 32_768;
 const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 60 * 1000;
 const KEYCLOAK_CLIENT_ID = 'berget-code';
 const CALLBACK_PORT = 8787;

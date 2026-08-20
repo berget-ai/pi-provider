@@ -58,7 +58,7 @@ describe('Model Fetching & Mapping', () => {
       output: 1.5,
     });
     expect(result.contextWindow).toBe(128_000);
-    expect(result.maxTokens).toBe(16_384);
+    expect(result.maxTokens).toBe(32_768);
     expect(result.compat).toEqual({ supportsDeveloperRole: false });
   });
 
@@ -144,7 +144,7 @@ describe('Model Fetching & Mapping', () => {
     };
 
     const result = mapBergetModelToModel(apiModel);
-    expect(result.maxTokens).toBe(16_384);
+    expect(result.maxTokens).toBe(32_768);
   });
 
   test('mapBergetModelToModel calculates per-million-token costs correctly', () => {
@@ -259,7 +259,7 @@ describe('MODEL_OVERRIDES table (regression guard)', () => {
       expect(result.cost.cacheRead).toBe(0);
       expect(result.cost.cacheWrite).toBe(0);
       expect(result.contextWindow).toBe(128_000);
-      expect(result.maxTokens).toBe(override.maxTokens ?? 16_384);
+      expect(result.maxTokens).toBe(override.maxTokens ?? 32_768);
     });
   }
 
