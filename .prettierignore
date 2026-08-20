@@ -3,6 +3,7 @@ dist
 build
 *.lock
 package-lock.json
+pnpm-lock.yaml
 .lockfile
 .husky
 coverage
