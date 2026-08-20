@@ -132,6 +132,21 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: 'xhigh',
     },
   },
+  'Qwen/Qwen3.8-27B-FP8': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Qwen3.8 supports reasoning_effort (xhigh by default, medium, low);
+    // off is reached via enable_thinking=false. Holes collapse to nearest.
+    thinkingLevelMap: {
+      high: null,
+      low: 'low',
+      max: null,
+      medium: 'medium',
+      minimal: null,
+      off: 'none',
+      xhigh: 'xhigh',
+    },
+  },
   'zai-org/GLM-4.7-FP8': {
     reasoning: true,
     // GLM-4.7 enable_thinking is binary — only off/high.
