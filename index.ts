@@ -160,6 +160,23 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: null,
     },
   },
+  'zai-org/GLM-5.3-Flash': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Thinking is always on (the chat template opens <think> unconditionally —
+    // there is no enable_thinking switch); reasoning_effort accepts only
+    // low/high/max and any other value silently falls back to max, so
+    // unsupported levels are blocked (null) rather than passed through.
+    thinkingLevelMap: {
+      high: 'high',
+      low: 'low',
+      max: 'max',
+      medium: null, // clamps up to high
+      minimal: null, // clamps up to low
+      off: null, // thinking cannot be disabled — level hidden from selector
+      xhigh: null, // clamps up to max
+    },
+  },
   'zai-org/GLM-5.2': {
     maxTokens: 32_768,
     reasoning: true,
