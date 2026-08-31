@@ -234,6 +234,31 @@ describe('Model Fetching & Mapping', () => {
     expect(result.cost.input).toBeCloseTo(0.2);
     expect(result.cost.output).toBeCloseTo(0.8);
   });
+
+  test('mapBergetModelToModel applies vision and reasoning override for zai-org/GLM-5.3-Flash', () => {
+    const apiModel = {
+      contextWindow: 327_680,
+      id: 'zai-org/GLM-5.3-Flash',
+      inputPricePerToken: 0.000_001,
+      outputPricePerToken: 0.000_002,
+    };
+
+    const result = mapBergetModelToModel(apiModel);
+
+    expect(result.input).toEqual(['text', 'image']);
+    expect(result.reasoning).toBe(true);
+    // Only low/high/max are accepted by the model — any other value would
+    // silently fall back to max server-side, so the holes must be null.
+    expect(result.thinkingLevelMap?.low).toBe('low');
+    expect(result.thinkingLevelMap?.high).toBe('high');
+    expect(result.thinkingLevelMap?.max).toBe('max');
+    expect(result.thinkingLevelMap?.off).toBeNull();
+    expect(result.thinkingLevelMap?.minimal).toBeNull();
+    expect(result.thinkingLevelMap?.medium).toBeNull();
+    expect(result.thinkingLevelMap?.xhigh).toBeNull();
+    expect(result.contextWindow).toBe(327_680);
+    expect(result.maxTokens).toBe(32_768);
+  });
 });
 
 describe('MODEL_OVERRIDES table (regression guard)', () => {
