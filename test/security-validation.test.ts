@@ -33,7 +33,7 @@ describe('Security hardening & input validation', () => {
   // --- Issue 6: Redirect URI uses 127.0.0.1 instead of localhost ---
 
   test('buildAuthUrl uses 127.0.0.1 in redirect_uri', () => {
-    process.env.BERGET_AUTH_URL = 'https://keycloak.berget.ai';
+    process.env.BERGET_AUTH_URL = 'https://auth.berget.ai';
     const url = buildAuthUrl('challenge123', 'state456');
     expect(url).toContain('redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback');
   });
