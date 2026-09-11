@@ -921,7 +921,7 @@ function getApiUrl(): string {
 }
 
 function getAuthUrl(): string {
-  return process.env.BERGET_AUTH_URL || 'https://keycloak.berget.ai';
+  return process.env.BERGET_AUTH_URL || 'https://auth.berget.ai';
 }
 
 function getInferenceUrl(): string {

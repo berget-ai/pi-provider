@@ -6,15 +6,15 @@ How the Berget provider authenticates users via OAuth 2.0 authorisation code + P
 
 ### Configuration
 
-| Variable                  | Default                      | Description                                             |
-| ------------------------- | ---------------------------- | ------------------------------------------------------- |
-| `BERGET_AUTH_URL`         | `https://keycloak.berget.ai` | Keycloak base URL                                       |
-| `BERGET_API_URL`          | `https://api.berget.ai`      | Berget API base URL                                     |
-| `BERGET_OAUTH_TIMEOUT_MS` | `300000` (5 min)             | Callback server & manual-input timeout                  |
-| `BERGET_INFERENCE_URL`    | `https://api.berget.ai/v1`   | Inference endpoint base URL; not used by the OAuth flow |
+| Variable                  | Default                    | Description                                             |
+| ------------------------- | -------------------------- | ------------------------------------------------------- |
+| `BERGET_AUTH_URL`         | `https://auth.berget.ai`   | Keycloak base URL                                       |
+| `BERGET_API_URL`          | `https://api.berget.ai`    | Berget API base URL                                     |
+| `BERGET_OAUTH_TIMEOUT_MS` | `300000` (5 min)           | Callback server & manual-input timeout                  |
+| `BERGET_INFERENCE_URL`    | `https://api.berget.ai/v1` | Inference endpoint base URL; not used by the OAuth flow |
 
 ```bash
-export BERGET_AUTH_URL=https://keycloak.berget.ai
+export BERGET_AUTH_URL=https://auth.berget.ai
 export BERGET_API_URL=https://api.berget.ai
 export BERGET_INFERENCE_URL=https://api.berget.ai/v1
 export BERGET_OAUTH_TIMEOUT_MS=300000
