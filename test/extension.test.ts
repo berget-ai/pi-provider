@@ -149,13 +149,17 @@ describe('Extension Entry Point', () => {
     await extension(mockPi as ExtensionAPI);
 
     // oauth.refresh replaces the legacy refreshToken (same refresh_token
-    // request, now (credential, signal?) -> OAuthCredential).
-    const refreshed = await capturedProvider!.auth.oauth!.refresh({
-      access: 'old-access-token',
-      expires: Date.now() - 1000,
-      refresh: 'old-refresh-token',
-      type: 'oauth',
-    });
+    // request, now (credential, signal?) -> OAuthCredential; signal is
+    // required in pi-ai >= 0.85).
+    const refreshed = await capturedProvider!.auth.oauth!.refresh(
+      {
+        access: 'old-access-token',
+        expires: Date.now() - 1000,
+        refresh: 'old-refresh-token',
+        type: 'oauth',
+      },
+      new AbortController().signal,
+    );
 
     expect(capturedBody).toContain('old-refresh-token');
     expect(refreshed.access).toBe('new-access-token');
@@ -274,21 +278,33 @@ describe('Extension Entry Point', () => {
     expect(capturedProvider!.getModels()[0].id).toBe('openai/gpt-oss-120b');
 
     // refreshModels: createProvider's fetchModels-backed refresh re-runs
-    // fetchBergetModels (second fetch), then persists the result through the
-    // provided store (store.write). It resolves to undefined; the merged
-    // catalog is observable via getModels().
+    // fetchBergetModels (second fetch), then persists the result. The context
+    // shape differs between pi-ai versions: 0.83 takes a `store`, 0.85 takes
+    // a `publish()` callback (and always a `signal`). The mock below supports
+    // both — publish applies `update()` and forwards `persist` to the store —
+    // so the test runs green against either version.
     let storeWroteModels: unknown = null;
     await capturedProvider!.refreshModels!({
       allowNetwork: true,
+      signal: new AbortController().signal,
+      // 0.85 contract; unused by 0.83.
+      publish: (publication: { update?: () => void; persist?: unknown }) => {
+        publication.update?.();
+        if (publication.persist) {
+          storeWroteModels = publication.persist;
+        }
+        return Promise.resolve(true);
+      },
+      // 0.83 contract; unused by 0.85.
       store: {
         read: () => Promise.resolve() as Promise<ModelsStoreEntry | undefined>,
-        write: (entry) => {
+        write: (entry: ModelsStoreEntry) => {
           storeWroteModels = entry;
           return Promise.resolve();
         },
         delete: () => Promise.resolve(),
       },
-    });
+    } as Parameters<NonNullable<typeof capturedProvider>['refreshModels']>[0]);
     expect(modelsCallCount).toBe(2);
     // createProvider persists the fetched Model[] through the store.
     expect(storeWroteModels).not.toBeNull();
