@@ -321,12 +321,12 @@ export async function loginBerget(interaction: AuthInteraction): Promise<OAuthCr
       {
         description: 'Opens the login page in a browser on this machine',
         id: 'browser',
-        label: 'Browser (magic link)',
+        label: 'Login using this device',
       },
       {
-        description: 'Scan a code with your phone — for SSH/headless machines',
+        description: 'Scan a QR code with your phone — for SSH/headless machines',
         id: 'device',
-        label: 'Device code (another device)',
+        label: 'Login using other device with QR',
       },
     ],
     type: 'select',
