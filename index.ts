@@ -23,6 +23,8 @@ import type { Socket } from 'node:net';
 
 import * as http from 'node:http';
 
+import QRCode from 'qrcode';
+
 // === Constants ===
 
 const DEFAULT_MAX_TOKENS = 32_768;
@@ -362,6 +364,7 @@ const DEVICE_FLOW_SCOPE = 'openid email profile offline_access device-email-otp'
 
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
 const MAX_POLL_INTERVAL_SECONDS = 30;
+const QR_QUIET_ZONE_MODULES = 2;
 
 interface DeviceAuthorizationResponse {
   device_code: string;
@@ -395,15 +398,25 @@ export async function loginBergetDeviceFlow(
 
   const deviceInfo = await requestDeviceAuthorization(baseUrl);
 
+  const verificationUri = deviceInfo.verification_uri_complete ?? deviceInfo.verification_uri;
+
   interaction.notify({
     expiresInSeconds: deviceInfo.expires_in,
     intervalSeconds: deviceInfo.interval ?? DEFAULT_POLL_INTERVAL_SECONDS,
     type: 'device_code',
     userCode: deviceInfo.user_code,
-    verificationUri: deviceInfo.verification_uri_complete ?? deviceInfo.verification_uri,
+    verificationUri,
   });
 
   interaction.notify({ message: 'Waiting for authorization...', type: 'progress' });
+
+  // Pi's native device_code view renders only the link and the user code, so
+  // append a scannable QR as an info event (appends without clearing).
+  const qr = generateTerminalQrCode(verificationUri);
+  interaction.notify({
+    message: `Scan with your phone:\n\n${qr}`,
+    type: 'info',
+  });
 
   return pollForDeviceTokens(baseUrl, deviceInfo, interaction.signal);
 }
@@ -488,6 +501,52 @@ export function handleDevicePollError(
       );
     }
   }
+}
+
+/**
+ * Renders the QR matrix as half-block pairs: one character covers two
+ * vertical modules using ▀/▄/█/space. Terminal cells are ~1:2 (w:h), so
+ * one module = one char wide, half a char tall — i.e. square pixels.
+ * Light blocks on the terminal's dark background — scannable on dark themes.
+ * (Proven pattern from the opencode plugin; quadrant/sextant encodings were
+ * tested there and rejected — stretched or unscannable.)
+ */
+function generateTerminalQrCode(data: string): string {
+  // Error correction 'L' keeps the matrix one version smaller than 'M' for
+  // our URL length — damage tolerance matters little on a clean screen.
+  const code = QRCode.create(data, { errorCorrectionLevel: 'L' });
+  const size = code.modules.size;
+  const total = size + QR_QUIET_ZONE_MODULES * 2;
+
+  const moduleAt = (row: number, col: number): number => {
+    const qrRow = row - QR_QUIET_ZONE_MODULES;
+    const qrCol = col - QR_QUIET_ZONE_MODULES;
+    if (qrRow < 0 || qrRow >= size || qrCol < 0 || qrCol >= size) {
+      return 0;
+    }
+    return code.modules.get(qrRow, qrCol) === 1 ? 1 : 0;
+  };
+
+  const rows: string[] = [];
+  for (let r = 0; r < total; r += 2) {
+    let row = '';
+    for (let c = 0; c < total; c += 1) {
+      const top = moduleAt(r, c) === 1;
+      const bottom = moduleAt(r + 1, c) === 1;
+      if (top && bottom) {
+        row += '█';
+      } else if (top) {
+        row += '▀';
+      } else if (bottom) {
+        row += '▄';
+      } else {
+        row += ' ';
+      }
+    }
+    rows.push(row);
+  }
+
+  return rows.join('\n');
 }
 
 /**
