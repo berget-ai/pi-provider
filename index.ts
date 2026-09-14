@@ -23,6 +23,8 @@ import type { Socket } from 'node:net';
 
 import * as http from 'node:http';
 
+import QRCode from 'qrcode';
+
 // === Constants ===
 
 const DEFAULT_MAX_TOKENS = 32_768;
@@ -313,6 +315,27 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
  * @throws `Missing authorization code` if no code is received.
  */
 export async function loginBerget(interaction: AuthInteraction): Promise<OAuthCredential> {
+  const method = await interaction.prompt({
+    message: 'How do you want to sign in?',
+    options: [
+      {
+        description: 'Opens the login page in a browser on this machine',
+        id: 'browser',
+        label: 'Browser (magic link)',
+      },
+      {
+        description: 'Scan a code with your phone — for SSH/headless machines',
+        id: 'device',
+        label: 'Device code (another device)',
+      },
+    ],
+    type: 'select',
+  });
+
+  if (method === 'device') {
+    return loginBergetDeviceFlow(interaction);
+  }
+
   const { challenge, verifier } = await generatePKCE();
   const state = generateRandomString();
 
@@ -327,6 +350,281 @@ export async function loginBerget(interaction: AuthInteraction): Promise<OAuthCr
   interaction.notify({ message: 'Exchanging authorization code for tokens...', type: 'progress' });
 
   return exchangeToken(code, verifier);
+}
+
+// === OAuth 2.0 Device Authorization Grant (RFC 8628) ===
+//
+// For headless environments (SSH, CI) where the loopback PKCE callback is not
+// feasible. The user authenticates on another device; this machine polls the
+// token endpoint until approval, denial, or expiry.
+
+const DEVICE_AUTHORIZATION_ENDPOINT_PATH = '/protocol/openid-connect/auth/device';
+const TOKEN_ENDPOINT_PATH = '/protocol/openid-connect/token';
+const DEVICE_FLOW_SCOPE = 'openid email profile offline_access device-email-otp';
+
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+const MAX_POLL_INTERVAL_SECONDS = 30;
+const QR_QUIET_ZONE_MODULES = 2;
+
+interface DeviceAuthorizationResponse {
+  device_code: string;
+  expires_in: number;
+  interval?: number;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+}
+
+interface DeviceTokenErrorResponse {
+  error?: string;
+  error_description?: string;
+}
+
+/**
+ * Run the Berget OAuth 2.0 Device Authorization Grant login flow.
+ *
+ * Requests a device/user code pair, surfaces it via the `device_code` auth
+ * event (rendered natively by Pi), then polls the token endpoint until the
+ * user approves, denies, or the code expires.
+ *
+ * @param interaction - Pi OAuth callbacks (`notify`, `signal`).
+ * @returns Access/refresh credentials with an expiry timestamp.
+ * @throws On denial, expiry, timeout, or authorization server errors.
+ */
+export async function loginBergetDeviceFlow(
+  interaction: AuthInteraction,
+): Promise<OAuthCredential> {
+  const baseUrl = `${getAuthUrl()}/realms/berget`;
+
+  const deviceInfo = await requestDeviceAuthorization(baseUrl);
+
+  const verificationUri = deviceInfo.verification_uri_complete ?? deviceInfo.verification_uri;
+
+  interaction.notify({
+    expiresInSeconds: deviceInfo.expires_in,
+    intervalSeconds: deviceInfo.interval ?? DEFAULT_POLL_INTERVAL_SECONDS,
+    type: 'device_code',
+    userCode: deviceInfo.user_code,
+    verificationUri,
+  });
+
+  interaction.notify({ message: 'Waiting for authorization...', type: 'progress' });
+
+  // Pi's native device_code view renders only the link and the user code, so
+  // append a scannable QR as an info event (appends without clearing).
+  const qr = generateTerminalQrCode(verificationUri);
+  interaction.notify({
+    message: `Scan with your phone:\n\n${qr}`,
+    type: 'info',
+  });
+
+  return pollForDeviceTokens(baseUrl, deviceInfo, interaction.signal);
+}
+
+async function requestDeviceAuthorization(baseUrl: string): Promise<DeviceAuthorizationResponse> {
+  const response = await fetch(`${baseUrl}${DEVICE_AUTHORIZATION_ENDPOINT_PATH}`, {
+    body: new URLSearchParams({
+      client_id: KEYCLOAK_CLIENT_ID,
+      scope: DEVICE_FLOW_SCOPE,
+    }).toString(),
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start device flow (${String(response.status)}): ${errorText}`);
+  }
+
+  return (await response.json()) as DeviceAuthorizationResponse;
+}
+
+/**
+ * Map a token response body to a credential, or undefined when the body is
+ * not a token response (i.e. an RFC 8628 error body to be handled by
+ * {@link handleDevicePollError}). Exported for tests.
+ */
+export function extractDeviceTokenResult(
+  data: Record<string, unknown>,
+): OAuthCredential | undefined {
+  if (
+    typeof data.access_token !== 'string' ||
+    typeof data.expires_in !== 'number' ||
+    typeof data.refresh_token !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    access: data.access_token,
+    expires: Date.now() + data.expires_in * 1000,
+    refresh: data.refresh_token,
+    type: 'oauth',
+  };
+}
+
+/**
+ * RFC 8628 token-poll error handling. Exported for tests.
+ *
+ * @returns `{ interval }` to adjust polling (slow_down), or throws a
+ *          user-readable Error for terminal states. `authorization_pending`
+ *          returns an empty object — keep polling unchanged.
+ */
+export function handleDevicePollError(
+  errorData: DeviceTokenErrorResponse,
+  intervalSeconds: number,
+): { interval?: number } {
+  switch (errorData.error) {
+    case 'authorization_pending': {
+      return {};
+    }
+    case 'slow_down': {
+      return {
+        interval: Math.min(
+          intervalSeconds + DEFAULT_POLL_INTERVAL_SECONDS,
+          MAX_POLL_INTERVAL_SECONDS,
+        ),
+      };
+    }
+    case 'access_denied': {
+      throw new Error('Sign-in was denied on the other device.');
+    }
+    case 'expired_token': {
+      throw new Error('The device code expired. Please try signing in again.');
+    }
+    default: {
+      throw new Error(
+        errorData.error_description
+          ? `Device flow failed: ${errorData.error ?? 'unknown'} — ${errorData.error_description}`
+          : `Device flow failed: ${errorData.error ?? 'unknown'}`,
+      );
+    }
+  }
+}
+
+/**
+ * Renders the QR matrix as half-block pairs: one character covers two
+ * vertical modules using ▀/▄/█/space. Terminal cells are ~1:2 (w:h), so
+ * one module = one char wide, half a char tall — i.e. square pixels.
+ * Light blocks on the terminal's dark background — scannable on dark themes.
+ * (Proven pattern from the opencode plugin; quadrant/sextant encodings were
+ * tested there and rejected — stretched or unscannable.)
+ */
+function generateTerminalQrCode(data: string): string {
+  // Error correction 'L' keeps the matrix one version smaller than 'M' for
+  // our URL length — damage tolerance matters little on a clean screen.
+  const code = QRCode.create(data, { errorCorrectionLevel: 'L' });
+  const size = code.modules.size;
+  const total = size + QR_QUIET_ZONE_MODULES * 2;
+
+  const moduleAt = (row: number, col: number): number => {
+    const qrRow = row - QR_QUIET_ZONE_MODULES;
+    const qrCol = col - QR_QUIET_ZONE_MODULES;
+    if (qrRow < 0 || qrRow >= size || qrCol < 0 || qrCol >= size) {
+      return 0;
+    }
+    return code.modules.get(qrRow, qrCol) === 1 ? 1 : 0;
+  };
+
+  const rows: string[] = [];
+  for (let r = 0; r < total; r += 2) {
+    let row = '';
+    for (let c = 0; c < total; c += 1) {
+      const top = moduleAt(r, c) === 1;
+      const bottom = moduleAt(r + 1, c) === 1;
+      if (top && bottom) {
+        row += '█';
+      } else if (top) {
+        row += '▀';
+      } else if (bottom) {
+        row += '▄';
+      } else {
+        row += ' ';
+      }
+    }
+    rows.push(row);
+  }
+
+  return rows.join('\n');
+}
+
+/**
+ * Single token poll request. Returns undefined on transport errors or
+ * non-JSON bodies (e.g. a 502 HTML page from the gateway in front of
+ * Keycloak) so the caller keeps retrying until the deadline.
+ */
+async function fetchDeviceTokenPollBody(
+  baseUrl: string,
+  deviceInfo: DeviceAuthorizationResponse,
+): Promise<Record<string, unknown> | undefined> {
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${TOKEN_ENDPOINT_PATH}`, {
+      body: new URLSearchParams({
+        client_id: KEYCLOAK_CLIENT_ID,
+        device_code: deviceInfo.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      }).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      method: 'POST',
+    });
+  } catch {
+    return undefined;
+  }
+
+  try {
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function pollForDeviceTokens(
+  baseUrl: string,
+  deviceInfo: DeviceAuthorizationResponse,
+  signal?: AbortSignal,
+): Promise<OAuthCredential> {
+  const deadline = Date.now() + deviceInfo.expires_in * 1000;
+  let intervalSeconds = deviceInfo.interval ?? DEFAULT_POLL_INTERVAL_SECONDS;
+
+  while (Date.now() < deadline) {
+    throwIfAborted(signal);
+    await deviceFlowSleep(intervalSeconds * 1000, signal);
+
+    const data = await fetchDeviceTokenPollBody(baseUrl, deviceInfo);
+    if (!data) {
+      continue;
+    }
+
+    const credential = extractDeviceTokenResult(data);
+    if (credential) {
+      return credential;
+    }
+
+    const action = handleDevicePollError(data, intervalSeconds);
+    if (action.interval !== undefined) {
+      intervalSeconds = action.interval;
+    }
+  }
+
+  throw new Error('Authentication timed out. Please try signing in again.');
+}
+
+function deviceFlowSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error('Login cancelled'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /**
