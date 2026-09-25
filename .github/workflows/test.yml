@@ -10,7 +10,11 @@ on:
 
 jobs:
   test:
+<<<<<<< Updated upstream
     runs-on: ubuntu-latest
+=======
+    runs-on: [infra-runner-set-light]
+>>>>>>> Stashed changes
     steps:
       - name: Checkout code
         uses: actions/checkout@v7

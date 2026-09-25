@@ -14,10 +14,14 @@ on:
 
 jobs:
   publish:
+<<<<<<< Updated upstream
     runs-on: ubuntu-latest
     permissions:
       contents: write # push version bump commit + tag
       id-token: write # OIDC token for npm Trusted Publishing
+=======
+    runs-on: [infra-runner-set-light]
+>>>>>>> Stashed changes
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
