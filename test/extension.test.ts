@@ -70,6 +70,7 @@ describe('Extension Entry Point', () => {
     expect(capturedProvider!.auth.apiKey).toBeDefined();
     expect(capturedProvider!.auth.oauth).toBeDefined();
     expect(capturedProvider!.auth.oauth!.name).toBe('Berget AI');
+    expect(capturedProvider!.auth.oauth!.isSubscription).toBe(true);
     expect(typeof capturedProvider!.auth.oauth!.login).toBe('function');
     expect(typeof capturedProvider!.auth.oauth!.refresh).toBe('function');
     expect(typeof capturedProvider!.auth.oauth!.toAuth).toBe('function');
