@@ -1272,6 +1272,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
  */
 function bergetOAuthAuth(): OAuthAuth {
   return {
+    isSubscription: true,
     login: (interaction: AuthInteraction) => loginBerget(interaction),
     loginLabel: 'Sign in with Berget Code',
     name: 'Berget AI',
