@@ -75,8 +75,8 @@
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0"
   },
   "dependencies": {
     "qrcode": "^1.5.4"

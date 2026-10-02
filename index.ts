@@ -13,11 +13,13 @@ import {
   createProvider,
   envApiKeyAuth,
   type AuthInteraction,
+  type ClassifierModel,
   type Model,
   type OAuthAuth,
   type OAuthCredential,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/compat';
+import { classify } from '@earendil-works/pi-ai/api/typesafe-system-one';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
@@ -299,6 +301,50 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
     outputPricePerToken:
       typeof record.outputPricePerToken === 'number' ? record.outputPricePerToken : 0,
   };
+}
+
+// === Classifier Models ===
+
+/**
+ * Static System One classifier models.
+ *
+ * @remarks `/v1/models/chat` does not list System One models, so these entries
+ *          are static and kept out of {@link fetchBergetModels}. createProvider
+ *          merges baseline models with the fetch overlay by type + id, so the
+ *          classifiers survive refreshes and stay out of chat model listings.
+ *          Context windows come from the inference-api model config
+ *          (`src/models/config.ts`); both models are Eval/preview lifecycle
+ *          there — if either is retired upstream, these entries go stale
+ *          silently. Ids are catalog aliases: the wire payload sends `id` as
+ *          the request `model`, and the server resolves aliases per request.
+ */
+export function getBergetClassifierModels(): ClassifierModel<'typesafe-system-one'>[] {
+  // Billed at €0.042/M input tokens; output is free.
+  const cost = { cacheRead: 0, cacheWrite: 0, input: 0.042, output: 0 };
+  return [
+    {
+      api: 'typesafe-system-one',
+      baseUrl: getInferenceUrl(),
+      contextWindow: 8192,
+      cost,
+      id: 'laya-latest',
+      input: ['text'],
+      name: 'System One (Laya multilingual)',
+      provider: 'berget',
+      type: 'classifier',
+    },
+    {
+      api: 'typesafe-system-one',
+      baseUrl: getInferenceUrl(),
+      contextWindow: 262_144,
+      cost,
+      id: 'systemone',
+      input: ['text'],
+      name: 'System One (Qwen3.5 2B)',
+      provider: 'berget',
+      type: 'classifier',
+    },
+  ];
 }
 
 // === OAuth (Authorization Code + PKCE) ===
@@ -1232,7 +1278,8 @@ function getInferenceUrl(): string {
  * Pi extension entry point. Pi awaits this async factory during startup so
  * model discovery and provider registration complete before the first prompt
  * or `pi --list-models`. Registers the `berget` provider with OpenAI-compatible
- * streaming, the inference base URL, and the OAuth login/refresh functions.
+ * streaming, the inference base URL, the OAuth login/refresh functions, and
+ * the System One classifier transport.
  */
 export default async function (pi: ExtensionAPI): Promise<void> {
   // Unconditional startup fetch preserves `pi --list-models` visibility for
@@ -1251,13 +1298,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         oauth: bergetOAuthAuth(),
       },
       baseUrl: getInferenceUrl(),
+      classifiers: { 'typesafe-system-one': { classify } },
       // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
       // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
       // can restore/persist it through the store — closing the shape gap that
       // blocked persistence on the legacy `ProviderConfig` form (PR #22).
       fetchModels: () => fetchBergetModels(),
       id: 'berget',
-      models,
+      models: [...models, ...getBergetClassifierModels()],
       name: 'Berget AI',
     }),
   );
