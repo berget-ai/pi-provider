@@ -1,0 +1,1268 @@
+/**
+ * Host-agnostic core of the Berget AI provider extension: model discovery and
+ * mapping plus the OAuth Authorization Code + PKCE and Device Authorization
+ * login/refresh flows.
+ *
+ * Imports from `@earendil-works/pi-ai` are type-only, so this module loads
+ * under any extension host that transpiles TypeScript (Pi and Oh My Pi alike)
+ * without resolving the pi-ai runtime. The host-specific entry points are
+ * `index.ts` (Pi) and `omp.ts` (Oh My Pi).
+ *
+ * @packageDocumentation
+ */
+import type {
+  AuthInteraction,
+  ClassifierModel,
+  Model,
+  OAuthCredential,
+} from '@earendil-works/pi-ai';
+import type { Socket } from 'node:net';
+
+import * as http from 'node:http';
+
+import QRCode from 'qrcode';
+
+// === Constants ===
+
+const DEFAULT_MAX_TOKENS = 32_768;
+const ACCESS_TOKEN_EXPIRY_BUFFER_MS = 60 * 1000;
+const KEYCLOAK_CLIENT_ID = 'berget-code';
+const CALLBACK_PORT = 8787;
+const CALLBACK_HOST = '127.0.0.1';
+const CALLBACK_PATH = '/callback';
+const REDIRECT_URI = `http://127.0.0.1:${String(CALLBACK_PORT)}${CALLBACK_PATH}`;
+
+// Read fresh at every call so env overrides take effect without a restart.
+export function getOAuthTimeoutMs(): number {
+  return Number.parseInt(process.env.BERGET_OAUTH_TIMEOUT_MS || '300000', 10);
+}
+
+// === Model Capability Overrides ===
+// Manual overrides for model capabilities not returned by /v1/models/chat.
+// Hugging Face model cards are the source of truth for these values.
+
+/**
+ * Manual capability overrides for models whose `/v1/models/chat` entry is
+ * wrong or incomplete. Keys are model ids; Hugging Face model cards are the
+ * source of truth for reasoning, input modalities, and `maxTokens`.
+ *
+ * Override fragments target the `Model<'openai-completions'>` shape (api,
+ * provider, and baseUrl are filled in by mapBergetModelToModel). Only the
+ * capability fields a given model actually needs to override are set.
+ */
+export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>>> = {
+  'google/gemma-4-31B-it': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Gemma 4 reasoning is a binary enable_thinking flag, so only off/high
+    // are meaningful. Holes collapse to the nearest supported level.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+  'meta-llama/Llama-3.1-8B-Instruct': {
+    reasoning: false,
+  },
+  'meta-llama/Llama-3.3-70B-Instruct': {
+    reasoning: false,
+  },
+  'mistralai/Mistral-Medium-3.5-128B': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // vLLM --reasoning-parser mistral honors OpenAI-style reasoning_effort.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: 'medium',
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+  'mistralai/Mistral-Small-3.2-24B-Instruct-2506': {
+    input: ['text', 'image'],
+    reasoning: false,
+  },
+  'moonshotai/Kimi-K2.6': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Kimi K2 thinking.type is enabled/disabled — binary, so only off/high.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+  'moonshotai/Kimi-K3': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Kimi K3 keeps K2's binary thinking.type (enabled/disabled) — only off/high.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+  'openai/gpt-oss-120b': {
+    reasoning: true,
+    // gpt-oss passes reasoning_effort through to vLLM; expose the ladder.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: 'medium',
+      minimal: null,
+      off: 'none',
+      xhigh: 'xhigh',
+    },
+  },
+  'Qwen/Qwen3.8-27B-FP8': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Qwen3.8 supports reasoning_effort (xhigh by default, medium, low);
+    // off is reached via enable_thinking=false. Holes collapse to nearest.
+    thinkingLevelMap: {
+      high: null,
+      low: 'low',
+      max: null,
+      medium: 'medium',
+      minimal: null,
+      off: 'none',
+      xhigh: 'xhigh',
+    },
+  },
+  'zai-org/GLM-4.7-FP8': {
+    reasoning: true,
+    // GLM-4.7 enable_thinking is binary — only off/high.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: null,
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+  'zai-org/GLM-5.3-Flash': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Thinking is always on (the chat template opens <think> unconditionally —
+    // there is no enable_thinking switch); reasoning_effort accepts only
+    // low/high/max and any other value silently falls back to max, so
+    // unsupported levels are blocked (null) rather than passed through.
+    thinkingLevelMap: {
+      high: 'high',
+      low: 'low',
+      max: 'max',
+      medium: null, // clamps up to high
+      minimal: null, // clamps up to low
+      off: null, // thinking cannot be disabled — level hidden from selector
+      xhigh: null, // clamps up to max
+    },
+  },
+  'zai-org/GLM-5.2': {
+    maxTokens: 32_768,
+    reasoning: true,
+    // GLM-5.2 exposes a real effort knob (high/max) via chat_template_kwargs.
+    thinkingLevelMap: {
+      high: 'high',
+      low: null,
+      max: 'max',
+      medium: null,
+      minimal: null,
+      off: 'none',
+      xhigh: null,
+    },
+  },
+};
+
+// === Types ===
+
+interface BergetModel {
+  contextWindow: number;
+  id: string;
+  inputPricePerToken: number;
+  outputPricePerToken: number;
+}
+
+interface CallbackResult {
+  code: string;
+  state: string;
+}
+
+// === Model Fetching & Mapping ===
+
+/**
+ * Fetch the Berget chat model list and map each entry to a pi-ai
+ * `Model<'openai-completions'>` for provider registration.
+ *
+ * @remarks - `GET /v1/models/chat` against {@link getApiUrl}. Numeric fields are
+ *          coerced to 0 rather than failing — they're informational, and a bad
+ *          value must not block model selection. Entries with no valid id are
+ *          dropped, since there's no model to select without one.
+ * @throws `Failed to fetch models: <status> <statusText>` on non-2xx,
+ *         `Malformed model list response: ...` when the body isn't an object
+ *         with a `models` array.
+ */
+export async function fetchBergetModels(): Promise<Model<'openai-completions'>[]> {
+  const apiUrl = getApiUrl();
+  const response = await fetch(`${apiUrl}/v1/models/chat`);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch models: ${String(response.status)} ${response.statusText}`);
+  }
+  const data: unknown = await response.json();
+  if (
+    !data ||
+    typeof data !== 'object' ||
+    !Array.isArray((data as Record<string, unknown>).models)
+  ) {
+    throw new Error('Malformed model list response: expected { models: [...] }');
+  }
+  const raw = (data as Record<string, unknown>).models as unknown[];
+  // Numeric fields (contextWindow, pricing) are informational — a bad value must
+  // not block the user from selecting the model, so coerce to 0 (the SDK
+  // treats contextWindow <= 0 as "unknown"). Drop entries with no valid id,
+  // since there is no model to select without one.
+  return raw
+    .map((entry) => coerceBergetModel(entry))
+    .filter((model): model is BergetModel => model !== null)
+    .map((model) => mapBergetModelToModel(model));
+}
+
+/**
+ * Map a {@link BergetModel} to a pi-ai `Model<'openai-completions'>`.
+ *
+ * @remarks Pricing is per-token in the API but per-million-token in Pi, so
+ *          `input`/`output` are scaled by `1e6`. Defaults to `text`-only input,
+ *          `reasoning: false`, and `DEFAULT_MAX_TOKENS`. The provider identity
+ *          (`api`, `provider`, `baseUrl`) is fixed for every Berget model.
+ *          Per-id {@link MODEL_OVERRIDES} are spread last and win on conflict.
+ */
+export function mapBergetModelToModel(model: BergetModel): Model<'openai-completions'> {
+  const base: Model<'openai-completions'> = {
+    api: 'openai-completions',
+    baseUrl: getInferenceUrl(),
+    compat: {
+      supportsDeveloperRole: false,
+    },
+    contextWindow: model.contextWindow,
+    cost: {
+      cacheRead: 0,
+      cacheWrite: 0,
+      input: model.inputPricePerToken * 1e6,
+      output: model.outputPricePerToken * 1e6,
+    },
+    id: model.id,
+    input: ['text'],
+    maxTokens: DEFAULT_MAX_TOKENS,
+    name: model.id,
+    provider: 'berget',
+    reasoning: false,
+  };
+
+  return { ...base, ...MODEL_OVERRIDES[model.id] };
+}
+
+// Returns a usable BergetModel, or null when the entry has no valid id (a model
+// can't be selected without one). Numeric fields are coerced to 0 on bad/missing
+// values rather than dropping the model — they're informational and a bad value
+// must not block the user from using the model.
+function coerceBergetModel(entry: unknown): BergetModel | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const record = entry as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id : '';
+  if (!id) return null;
+  return {
+    contextWindow: typeof record.contextWindow === 'number' ? record.contextWindow : 0,
+    id,
+    inputPricePerToken:
+      typeof record.inputPricePerToken === 'number' ? record.inputPricePerToken : 0,
+    outputPricePerToken:
+      typeof record.outputPricePerToken === 'number' ? record.outputPricePerToken : 0,
+  };
+}
+
+// === Classifier Models ===
+
+/**
+ * Static System One classifier models.
+ *
+ * @remarks `/v1/models/chat` does not list System One models, so these entries
+ *          are static and kept out of {@link fetchBergetModels}. createProvider
+ *          merges baseline models with the fetch overlay by type + id, so the
+ *          classifiers survive refreshes and stay out of chat model listings.
+ *          Context windows come from the inference-api model config
+ *          (`src/models/config.ts`); both models are Eval/preview lifecycle
+ *          there — if either is retired upstream, these entries go stale
+ *          silently. Ids are catalog aliases: the wire payload sends `id` as
+ *          the request `model`, and the server resolves aliases per request.
+ */
+export function getBergetClassifierModels(): ClassifierModel<'typesafe-system-one'>[] {
+  // Billed at €0.042/M input tokens; output is free.
+  const cost = { cacheRead: 0, cacheWrite: 0, input: 0.042, output: 0 };
+  return [
+    {
+      api: 'typesafe-system-one',
+      baseUrl: getInferenceUrl(),
+      contextWindow: 8192,
+      cost,
+      id: 'laya-latest',
+      input: ['text'],
+      name: 'System One (Laya multilingual)',
+      provider: 'berget',
+      type: 'classifier',
+    },
+    {
+      api: 'typesafe-system-one',
+      baseUrl: getInferenceUrl(),
+      contextWindow: 262_144,
+      cost,
+      id: 'systemone',
+      input: ['text'],
+      name: 'System One (Qwen3.5 2B)',
+      provider: 'berget',
+      type: 'classifier',
+    },
+  ];
+}
+
+// === OAuth (Authorization Code + PKCE) ===
+
+/**
+ * Run the Berget OAuth 2.0 Authorization Code + PKCE login flow.
+ *
+ * Orchestrates: PKCE challenge/state → {@link buildAuthUrl} →
+ * {@link collectAuthCode} → {@link exchangeToken}.
+ *
+ * @param callbacks - Pi OAuth callbacks (`onAuth`, `onPrompt`, optional
+ *                   `onManualCodeInput`, `onProgress`).
+ * @returns Access/refresh credentials with an expiry timestamp.
+ * @throws `Missing authorization code` if no code is received.
+ */
+export async function loginBerget(interaction: AuthInteraction): Promise<OAuthCredential> {
+  const method = await interaction.prompt({
+    message: 'How do you want to sign in?',
+    options: [
+      {
+        description: 'Opens the login page in a browser on this machine',
+        id: 'browser',
+        label: 'Login using this device',
+      },
+      {
+        description: 'Scan a QR code with your phone — for SSH/headless machines',
+        id: 'device',
+        label: 'Login using other device with QR',
+      },
+    ],
+    type: 'select',
+  });
+
+  if (method === 'device') {
+    return loginBergetDeviceFlow(interaction);
+  }
+
+  const { challenge, verifier } = await generatePKCE();
+  const state = generateRandomString();
+
+  const authUrl = buildAuthUrl(challenge, state);
+
+  const code = await collectAuthCode(interaction, authUrl, state);
+
+  if (!code) {
+    throw new Error('Missing authorization code');
+  }
+
+  interaction.notify({ message: 'Exchanging authorization code for tokens...', type: 'progress' });
+
+  return exchangeToken(code, verifier);
+}
+
+// === OAuth 2.0 Device Authorization Grant (RFC 8628) ===
+//
+// For headless environments (SSH, CI) where the loopback PKCE callback is not
+// feasible. The user authenticates on another device; this machine polls the
+// token endpoint until approval, denial, or expiry.
+
+const DEVICE_AUTHORIZATION_ENDPOINT_PATH = '/protocol/openid-connect/auth/device';
+const TOKEN_ENDPOINT_PATH = '/protocol/openid-connect/token';
+const DEVICE_FLOW_SCOPE = 'openid email profile offline_access device-email-otp';
+
+const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+const MAX_POLL_INTERVAL_SECONDS = 30;
+const QR_QUIET_ZONE_MODULES = 2;
+
+interface DeviceAuthorizationResponse {
+  device_code: string;
+  expires_in: number;
+  interval?: number;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete?: string;
+}
+
+interface DeviceTokenErrorResponse {
+  error?: string;
+  error_description?: string;
+}
+
+/**
+ * Run the Berget OAuth 2.0 Device Authorization Grant login flow.
+ *
+ * Requests a device/user code pair, surfaces it via the `device_code` auth
+ * event (rendered natively by Pi), then polls the token endpoint until the
+ * user approves, denies, or the code expires.
+ *
+ * @param interaction - Pi OAuth callbacks (`notify`, `signal`).
+ * @returns Access/refresh credentials with an expiry timestamp.
+ * @throws On denial, expiry, timeout, or authorization server errors.
+ */
+export async function loginBergetDeviceFlow(
+  interaction: AuthInteraction,
+): Promise<OAuthCredential> {
+  const baseUrl = `${getAuthUrl()}/realms/berget`;
+
+  const deviceInfo = await requestDeviceAuthorization(baseUrl);
+
+  const verificationUri = deviceInfo.verification_uri_complete ?? deviceInfo.verification_uri;
+
+  interaction.notify({
+    expiresInSeconds: deviceInfo.expires_in,
+    intervalSeconds: deviceInfo.interval ?? DEFAULT_POLL_INTERVAL_SECONDS,
+    type: 'device_code',
+    userCode: deviceInfo.user_code,
+    verificationUri,
+  });
+
+  interaction.notify({ message: 'Waiting for authorization...', type: 'progress' });
+
+  // Pi's native device_code view renders only the link and the user code, so
+  // append a scannable QR as an info event (appends without clearing).
+  const qr = generateTerminalQrCode(verificationUri);
+  interaction.notify({
+    message: `Scan with your phone:\n\n${qr}`,
+    type: 'info',
+  });
+
+  return pollForDeviceTokens(baseUrl, deviceInfo, interaction.signal);
+}
+
+async function requestDeviceAuthorization(baseUrl: string): Promise<DeviceAuthorizationResponse> {
+  const response = await fetch(`${baseUrl}${DEVICE_AUTHORIZATION_ENDPOINT_PATH}`, {
+    body: new URLSearchParams({
+      client_id: KEYCLOAK_CLIENT_ID,
+      scope: DEVICE_FLOW_SCOPE,
+    }).toString(),
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to start device flow (${String(response.status)}): ${errorText}`);
+  }
+
+  return (await response.json()) as DeviceAuthorizationResponse;
+}
+
+/**
+ * Map a token response body to a credential, or undefined when the body is
+ * not a token response (i.e. an RFC 8628 error body to be handled by
+ * {@link handleDevicePollError}). Exported for tests.
+ */
+export function extractDeviceTokenResult(
+  data: Record<string, unknown>,
+): OAuthCredential | undefined {
+  if (
+    typeof data.access_token !== 'string' ||
+    typeof data.expires_in !== 'number' ||
+    typeof data.refresh_token !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    access: data.access_token,
+    expires: Date.now() + data.expires_in * 1000,
+    refresh: data.refresh_token,
+    type: 'oauth',
+  };
+}
+
+/**
+ * RFC 8628 token-poll error handling. Exported for tests.
+ *
+ * @returns `{ interval }` to adjust polling (slow_down), or throws a
+ *          user-readable Error for terminal states. `authorization_pending`
+ *          returns an empty object — keep polling unchanged.
+ */
+export function handleDevicePollError(
+  errorData: DeviceTokenErrorResponse,
+  intervalSeconds: number,
+): { interval?: number } {
+  switch (errorData.error) {
+    case 'authorization_pending': {
+      return {};
+    }
+    case 'slow_down': {
+      return {
+        interval: Math.min(
+          intervalSeconds + DEFAULT_POLL_INTERVAL_SECONDS,
+          MAX_POLL_INTERVAL_SECONDS,
+        ),
+      };
+    }
+    case 'access_denied': {
+      throw new Error('Sign-in was denied on the other device.');
+    }
+    case 'expired_token': {
+      throw new Error('The device code expired. Please try signing in again.');
+    }
+    default: {
+      throw new Error(
+        errorData.error_description
+          ? `Device flow failed: ${errorData.error ?? 'unknown'} — ${errorData.error_description}`
+          : `Device flow failed: ${errorData.error ?? 'unknown'}`,
+      );
+    }
+  }
+}
+
+/**
+ * Renders the QR matrix as half-block pairs: one character covers two
+ * vertical modules using ▀/▄/█/space. Terminal cells are ~1:2 (w:h), so
+ * one module = one char wide, half a char tall — i.e. square pixels.
+ * Light blocks on the terminal's dark background — scannable on dark themes.
+ * (Proven pattern from the opencode plugin; quadrant/sextant encodings were
+ * tested there and rejected — stretched or unscannable.)
+ */
+function generateTerminalQrCode(data: string): string {
+  // Error correction 'L' keeps the matrix one version smaller than 'M' for
+  // our URL length — damage tolerance matters little on a clean screen.
+  const code = QRCode.create(data, { errorCorrectionLevel: 'L' });
+  const size = code.modules.size;
+  const total = size + QR_QUIET_ZONE_MODULES * 2;
+
+  const moduleAt = (row: number, col: number): number => {
+    const qrRow = row - QR_QUIET_ZONE_MODULES;
+    const qrCol = col - QR_QUIET_ZONE_MODULES;
+    if (qrRow < 0 || qrRow >= size || qrCol < 0 || qrCol >= size) {
+      return 0;
+    }
+    return code.modules.get(qrRow, qrCol) === 1 ? 1 : 0;
+  };
+
+  const rows: string[] = [];
+  for (let r = 0; r < total; r += 2) {
+    let row = '';
+    for (let c = 0; c < total; c += 1) {
+      const top = moduleAt(r, c) === 1;
+      const bottom = moduleAt(r + 1, c) === 1;
+      if (top && bottom) {
+        row += '█';
+      } else if (top) {
+        row += '▀';
+      } else if (bottom) {
+        row += '▄';
+      } else {
+        row += ' ';
+      }
+    }
+    rows.push(row);
+  }
+
+  return rows.join('\n');
+}
+
+/**
+ * Single token poll request. Returns undefined on transport errors or
+ * non-JSON bodies (e.g. a 502 HTML page from the gateway in front of
+ * Keycloak) so the caller keeps retrying until the deadline.
+ */
+async function fetchDeviceTokenPollBody(
+  baseUrl: string,
+  deviceInfo: DeviceAuthorizationResponse,
+): Promise<Record<string, unknown> | undefined> {
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${TOKEN_ENDPOINT_PATH}`, {
+      body: new URLSearchParams({
+        client_id: KEYCLOAK_CLIENT_ID,
+        device_code: deviceInfo.device_code,
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      }).toString(),
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      method: 'POST',
+    });
+  } catch {
+    return undefined;
+  }
+
+  try {
+    return (await response.json()) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+async function pollForDeviceTokens(
+  baseUrl: string,
+  deviceInfo: DeviceAuthorizationResponse,
+  signal?: AbortSignal,
+): Promise<OAuthCredential> {
+  const deadline = Date.now() + deviceInfo.expires_in * 1000;
+  let intervalSeconds = deviceInfo.interval ?? DEFAULT_POLL_INTERVAL_SECONDS;
+
+  while (Date.now() < deadline) {
+    throwIfAborted(signal);
+    await deviceFlowSleep(intervalSeconds * 1000, signal);
+
+    const data = await fetchDeviceTokenPollBody(baseUrl, deviceInfo);
+    if (!data) {
+      continue;
+    }
+
+    const credential = extractDeviceTokenResult(data);
+    if (credential) {
+      return credential;
+    }
+
+    const action = handleDevicePollError(data, intervalSeconds);
+    if (action.interval !== undefined) {
+      intervalSeconds = action.interval;
+    }
+  }
+
+  throw new Error('Authentication timed out. Please try signing in again.');
+}
+
+function deviceFlowSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error('Login cancelled'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Build the Keycloak authorization-code URL.
+ *
+ * @remarks Uses the `CALLBACK_HOST` loopback redirect and the
+ *          `openid email profile offline_access` scope — `offline_access` is
+ *          what yields the refresh token the refresh path depends on.
+ */
+export function buildAuthUrl(challenge: string, state: string): string {
+  const authBaseUrl = getAuthUrl();
+  const parameters = new URLSearchParams({
+    client_id: KEYCLOAK_CLIENT_ID,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    scope: 'openid email profile offline_access',
+    state,
+  });
+  return `${authBaseUrl}/realms/berget/protocol/openid-connect/auth?${parameters.toString()}`;
+}
+
+/**
+ * Generate a PKCE code verifier and S256 code challenge.
+ *
+ * @remarks The verifier is 96 random bytes, base64url-encoded to a
+ *          128-character string within RFC 7636's 43–128-character range.
+ */
+export async function generatePKCE(): Promise<{ challenge: string; verifier: string }> {
+  const verifierBytes = new Uint8Array(96);
+  crypto.getRandomValues(verifierBytes);
+  const verifier = base64URLEncode(verifierBytes.buffer);
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const challenge = base64URLEncode(digest);
+  return { challenge, verifier };
+}
+
+/**
+ * Exchange an authorization code for OAuth tokens.
+ *
+ * @remarks Expiry is set with an `ACCESS_TOKEN_EXPIRY_BUFFER_MS` (60 s) lead
+ *          buffer (`now + expires_in*1000 − 60s`) so a token expiring mid-request
+ *          still triggers a refresh.
+ * @throws `Token exchange failed: <status> <body>` on non-2xx.
+ * @throws `Invalid token response: ...` when the body isn't a valid Keycloak token response.
+ */
+export async function exchangeToken(code: string, verifier: string): Promise<OAuthCredential> {
+  const authBaseUrl = getAuthUrl();
+  const tokenResponse = await fetch(`${authBaseUrl}/realms/berget/protocol/openid-connect/token`, {
+    body: new URLSearchParams({
+      client_id: KEYCLOAK_CLIENT_ID,
+      code,
+      code_verifier: verifier,
+      grant_type: 'authorization_code',
+      redirect_uri: REDIRECT_URI,
+    }),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    method: 'POST',
+  });
+
+  if (!tokenResponse.ok) {
+    const errorBody = await tokenResponse.text();
+    throw new Error(`Token exchange failed: ${String(tokenResponse.status)} ${errorBody}`);
+  }
+
+  const tokenData: unknown = await tokenResponse.json();
+  if (!isKeycloakTokenResponse(tokenData)) {
+    throw new Error(
+      'Invalid token response: expected { access_token: string, expires_in: number, refresh_token: string }',
+    );
+  }
+
+  return {
+    access: tokenData.access_token,
+    expires: Date.now() + tokenData.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+    refresh: tokenData.refresh_token,
+    type: 'oauth',
+  };
+}
+
+/**
+ * Collect an authorization code from the loopback callback server.
+ *
+ * Thin wrapper over {@link _collectAuthCode} using the real
+ * {@link startCallbackServer}. Falls back to manual entry via `onPrompt` when
+ * no code arrives from the callback (e.g. state mismatch, network error).
+ *
+ * @returns The code, or `null` to trigger `onPrompt` fallback.
+ */
+export async function collectAuthCode(
+  interaction: AuthInteraction,
+  authUrl: string,
+  state: string,
+): Promise<null | string> {
+  return _collectAuthCode(interaction, authUrl, state, startCallbackServer);
+}
+
+/**
+ * Testable core of {@link collectAuthCode} with an injectable server factory.
+ *
+ * @internal Exported (prefixed `_`) solely so tests can inject a mock
+ *           `serverFactory` in place of {@link startCallbackServer}.
+ */
+export async function _collectAuthCode(
+  interaction: AuthInteraction,
+  authUrl: string,
+  state: string,
+  serverFactory: typeof startCallbackServer,
+): Promise<null | string> {
+  let callbackServer: Awaited<ReturnType<typeof startCallbackServer>> | null = null;
+
+  try {
+    callbackServer = await serverFactory(state);
+
+    // Surface the auth URL. `notify` is fire-and-forget for UI events.
+    interaction.notify({
+      instructions:
+        'Complete login in your browser. If the browser is on another machine, paste the full redirect URL here.',
+      type: 'auth_url',
+      url: authUrl,
+    });
+
+    // Race the loopback callback server against a `manual_code` prompt.
+    // `resolveManualCode` runs the prompt concurrently with `waitForCode` and
+    // times out via `getOAuthTimeoutMs()`, preserving the two-phase race that
+    // `oauth-callback-errors.test.ts` encodes.
+    let code: null | string = await resolveManualCode(callbackServer, interaction);
+
+    if (!code) {
+      const result = await callbackServer.waitForCode();
+      code = result?.code ?? null;
+    }
+
+    if (code) return code;
+  } finally {
+    callbackServer?.close();
+  }
+
+  return interaction.prompt({
+    message: 'Enter the authorization code from the callback URL',
+    placeholder: 'Authorization code',
+    type: 'text',
+  });
+}
+
+/**
+ * Resolve a code from manual input, racing the callback server.
+ *
+ * Runs a `manual_code` prompt concurrently with {@link startCallbackServer}'s
+ * `waitForCode`; a manual code cancels the server wait and vice versa. Phase 2
+ * times out via {@link getOAuthTimeoutMs}.
+ *
+ * @remarks The manual-input promise is intentionally left to settle in the
+ *          background if phase 1 returns via the callback — it only mutates
+ *          locals and calls `cancelWait`, which are no-ops by then.
+ * @returns The code, `null` to fall through to the `text` prompt (timeout/no
+ *          input), or rethrows the manual-input rejection.
+ */
+export async function resolveManualCode(
+  callbackServer: Awaited<ReturnType<typeof startCallbackServer>>,
+  interaction: AuthInteraction,
+): Promise<null | string> {
+  let manualInput: string | undefined;
+  let manualError: Error | undefined;
+
+  // Runs concurrently with waitForCode so a manual code can cancel the server
+  // wait. The .catch records the rejection for phase 2 and prevents an
+  // unhandled rejection. NB: if phase 1 returns via the callback, this promise
+  // is intentionally left to settle in the background — it only mutates locals
+  // and calls cancelWait, which are no-ops by then. We cannot await it before
+  // returning because the prompt may resolve/reject only after the caller has
+  // moved on.
+  const manualPromise = interaction
+    .prompt({
+      message: 'Enter the authorization code from the callback URL',
+      placeholder: 'Authorization code',
+      type: 'manual_code',
+    })
+    .then((input: string) => {
+      manualInput = input;
+      callbackServer.cancelWait();
+      return input;
+    })
+    .catch((error: unknown) => {
+      manualError = error instanceof Error ? error : new Error(String(error));
+      callbackServer.cancelWait();
+    });
+
+  const result = await callbackServer.waitForCode();
+
+  if (result?.code) return result.code;
+  if (manualInput) return parseCodeFromInput(manualInput);
+
+  const timeoutPromise = new Promise<null>((resolve) => {
+    setTimeout(() => {
+      callbackServer.cancelWait();
+      resolve(null);
+    }, getOAuthTimeoutMs());
+  });
+
+  const winner = await Promise.race([manualPromise, timeoutPromise]);
+
+  if (winner === null) {
+    // Timeout — fall through to the text prompt in _collectAuthCode.
+    return null;
+  }
+
+  if (manualError) throw manualError;
+
+  return manualInput ? parseCodeFromInput(manualInput) : null;
+}
+
+/**
+ * Extract an authorization code from manual user input.
+ *
+ * @remarks Tries to parse `input` as a URL and read its `code` query param;
+ *          if that fails, treats `input` as a raw code.
+ */
+export function parseCodeFromInput(input: string): string {
+  try {
+    const url = new URL(input);
+    const code = url.searchParams.get('code');
+    if (code) return code;
+  } catch {
+    // Not a URL, treat as raw code
+  }
+  return input;
+}
+
+// === Token Refresh ===
+
+// Refresh retry policy for transient failures (429 rate limit, 5xx server
+// errors). Total attempts (initial + retries).
+const REFRESH_MAX_ATTEMPTS = 3;
+const REFRESH_BACKOFF_BASE_MS = 1000;
+// The auth rate limiter can ask for waits far beyond a usable UX (its window
+// is 30 minutes), so Retry-After hints above this cap are not honored — the
+// refresh fails fast instead of blocking the agent.
+const REFRESH_RETRY_AFTER_CAP_MS = 60 * 1000;
+
+/**
+ * Refresh an expired access token via `POST /v1/auth/refresh`.
+ *
+ * @remarks Same `ACCESS_TOKEN_EXPIRY_BUFFER_MS` (60 s) expiry buffer as
+ *          {@link exchangeToken}. When the server omits a new refresh token, the
+ *          previous one is reused (`data.refresh_token || credentials.refresh`).
+ *          Retries up to {@link REFRESH_MAX_ATTEMPTS} times on transient
+ *          failures (HTTP 429 and 5xx), honoring a bounded `Retry-After`
+ *          header and otherwise using exponential backoff. 4xx responses other
+ *          than 429 are permanent and fail immediately.
+ * @throws `Token refresh failed: <status> <body>` on a non-retryable status or
+ *         after exhausting retries.
+ * @throws `Invalid token response: ...` when the body isn't a valid Berget token response.
+ */
+export async function refreshBergetToken(
+  credentials: OAuthCredential,
+  signal?: AbortSignal,
+): Promise<OAuthCredential> {
+  const apiUrl = getApiUrl();
+
+  for (let attempt = 1; ; attempt++) {
+    throwIfAborted(signal);
+
+    const response = await fetch(`${apiUrl}/v1/auth/refresh`, {
+      body: JSON.stringify({
+        refresh_token: credentials.refresh,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      signal,
+    });
+
+    if (response.ok) {
+      const data: unknown = await response.json();
+      if (!isBergetTokenResponse(data)) {
+        throw new Error(
+          'Invalid token response: expected { token: string, expires_in: number, refresh_token?: string }',
+        );
+      }
+
+      return {
+        access: data.token,
+        expires: Date.now() + data.expires_in * 1000 - ACCESS_TOKEN_EXPIRY_BUFFER_MS,
+        refresh: data.refresh_token || credentials.refresh,
+        type: 'oauth',
+      };
+    }
+
+    const errorText = await response.text();
+    const error = new Error(`Token refresh failed: ${String(response.status)} ${errorText}`);
+
+    if (!isRetryableRefreshStatus(response.status) || attempt >= REFRESH_MAX_ATTEMPTS) {
+      throw error;
+    }
+
+    const retryAfterMs = parseRetryAfterMs(response.headers.get('Retry-After'));
+    // A Retry-After beyond the cap means the server wants a wait longer than a
+    // user can tolerate (e.g. the 30-minute auth rate-limit window) — fail fast.
+    if (retryAfterMs !== undefined && retryAfterMs > REFRESH_RETRY_AFTER_CAP_MS) {
+      throw error;
+    }
+
+    await waitForRetry(retryAfterMs ?? REFRESH_BACKOFF_BASE_MS * 2 ** (attempt - 1), signal);
+  }
+}
+
+// Milliseconds of setTimeout/setInterval precision Node coalesces — a wait
+// scheduled this close to now resolves effectively immediately.
+const IMMEDIATE_WAIT_MS = 1;
+
+function scheduledWait(ms: number, callback: () => void): () => void {
+  if (ms <= IMMEDIATE_WAIT_MS) {
+    const immediate = setImmediate(callback);
+    return () => {
+      clearImmediate(immediate);
+    };
+  }
+  const timer = setTimeout(callback, ms);
+  return () => {
+    clearTimeout(timer);
+  };
+}
+
+function isRetryableRefreshStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const reason: unknown = signal.reason;
+  throw reason instanceof Error ? reason : new Error('Token refresh aborted');
+}
+
+/**
+ * Parse a `Retry-After` header (delay-seconds or HTTP-date) into milliseconds.
+ * Returns `undefined` when the header is missing or unparseable.
+ */
+export function parseRetryAfterMs(header: null | string): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // The signal may have fired before this wait started (an already-aborted
+    // signal never emits 'abort' again), so check synchronously on entry.
+    if (signal?.aborted) {
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      return;
+    }
+    const onAbort = (): void => {
+      cancel();
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+    // setImmediate for sub-millisecond waits: vitest fake timers hang on
+    // zero-delay setTimeout callbacks (never drained without an explicit
+    // advanceTimersByTime), and setTimeout(0) is coalesced to ~1 ms anyway.
+    const cancel = scheduledWait(ms, () => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    });
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+// === Token Response Validation ===
+
+function isKeycloakTokenResponse(
+  data: unknown,
+): data is { access_token: string; expires_in: number; refresh_token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'access_token' in data &&
+    typeof (data as Record<string, unknown>).access_token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number' &&
+    'refresh_token' in data &&
+    typeof (data as Record<string, unknown>).refresh_token === 'string'
+  );
+}
+
+function isBergetTokenResponse(
+  data: unknown,
+): data is { expires_in: number; refresh_token?: string; token: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'token' in data &&
+    typeof (data as Record<string, unknown>).token === 'string' &&
+    'expires_in' in data &&
+    typeof (data as Record<string, unknown>).expires_in === 'number'
+  );
+}
+
+// === Callback Server ===
+
+/**
+ * Start the local OAuth callback server on the loopback address
+ * (`CALLBACK_HOST`:`CALLBACK_PORT`).
+ *
+ * @remarks Binds `127.0.0.1` explicitly rather than `localhost` to avoid IPv6
+ *          dual-stack mismatch (`localhost` resolving to `::1` while the server
+ *          binds `127.0.0.1`). The bind address is not runtime-configurable.
+ * @returns An object with `cancelWait`, `close`, `server`, and `waitForCode`.
+ * @throws `Port <CALLBACK_PORT> is already in use` on `EADDRINUSE`.
+ */
+export function startCallbackServer(expectedState: string): Promise<{
+  cancelWait: () => void;
+  close: () => void;
+  server: http.Server;
+  waitForCode: () => Promise<CallbackResult | null>;
+}> {
+  return new Promise((resolve, reject) => {
+    let settleWait: ((value: CallbackResult | null) => void) | null = null;
+    let settled = false;
+
+    const activeSockets = new Set<Socket>();
+
+    const waitForCodePromise = new Promise<CallbackResult | null>((resolve) => {
+      settleWait = (value: CallbackResult | null): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+    });
+
+    const server = http.createServer((request, res) => {
+      if (settleWait) {
+        handleOAuthRequest(request, res, expectedState, settleWait);
+      }
+    });
+
+    server.on('connection', (socket: Socket) => {
+      activeSockets.add(socket);
+      socket.once('close', () => activeSockets.delete(socket));
+    });
+
+    server.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        reject(
+          new Error(
+            `Port ${String(CALLBACK_PORT)} is already in use. Close other applications using this port.`,
+          ),
+        );
+      } else {
+        reject(error);
+      }
+    });
+
+    server.listen(CALLBACK_PORT, CALLBACK_HOST, () => {
+      const timeout = setTimeout(() => {
+        settleWait?.(null);
+      }, getOAuthTimeoutMs());
+
+      resolve({
+        cancelWait: () => {
+          clearTimeout(timeout);
+          settleWait?.(null);
+        },
+        close: () => {
+          clearTimeout(timeout);
+          for (const socket of activeSockets) {
+            socket.destroy();
+          }
+          activeSockets.clear();
+          server.close();
+        },
+        server,
+        waitForCode: () => waitForCodePromise,
+      });
+    });
+  });
+}
+
+function handleOAuthRequest(
+  request: http.IncomingMessage,
+  res: http.ServerResponse,
+  expectedState: string,
+  settleWait: (value: CallbackResult | null) => void,
+): void {
+  try {
+    const parsed = new URL(request.url || '/', 'http://localhost');
+    if (parsed.pathname !== CALLBACK_PATH) {
+      res.writeHead(404, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(oauthResponseHtml(false, 'Not found.'));
+      return;
+    }
+    const code = parsed.searchParams.get('code');
+    const state = parsed.searchParams.get('state');
+    const error = parsed.searchParams.get('error');
+
+    if (error) {
+      res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(oauthResponseHtml(false, error));
+      settleWait(null);
+      return;
+    }
+    if (!code || !state) {
+      res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(oauthResponseHtml(false, 'Missing authorization code.'));
+      settleWait(null);
+      return;
+    }
+    if (state !== expectedState) {
+      res.writeHead(400, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(oauthResponseHtml(false, 'State mismatch. Please try again.'));
+      settleWait(null);
+      return;
+    }
+
+    res.writeHead(200, { Connection: 'close', 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(oauthResponseHtml(true, 'You can close this window and return to Pi.'));
+    settleWait({ code, state });
+  } catch {
+    res.writeHead(500, { Connection: 'close', 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Internal error');
+  }
+}
+
+/**
+ * Build the browser-facing success/failure response page for the callback.
+ */
+export function oauthResponseHtml(success: boolean, message: string): string {
+  const color = success ? '#4ade80' : '#f87171';
+  const bg = success ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)';
+  const title = success ? 'Authentication Successful' : 'Authentication Failed';
+  const icon = success
+    ? `<polyline points="20 6 9 17 4 12"/>`
+    : `<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Berget - ${title}</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:linear-gradient(135deg,#0f0f1a,#1a1a2e 50%,#16213e);color:#fff}.container{text-align:center;padding:3rem;max-width:400px}.icon{width:80px;height:80px;background:linear-gradient(135deg,${color},${color});border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;box-shadow:0 4px 20px ${bg}}.icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none}h1{font-size:1.5rem;font-weight:600;margin-bottom:.75rem}p{color:#94a3b8;font-size:.95rem;line-height:1.5}.brand{margin-top:2rem;opacity:.5;font-size:.8rem;letter-spacing:.05em}</style></head><body><div class="container"><div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">${icon}</svg></div><h1>${title}</h1><p>${escapeHtml(message)}</p><div class="brand">BERGET</div></div></body></html>`;
+}
+
+/**
+ * Escape a string for safe interpolation as HTML text content.
+ *
+ * @remarks Safe for HTML **text content only** — do NOT reuse in an attribute
+ *          context, since single quotes are not escaped and this would introduce
+ *          an XSS sink.
+ */
+export function escapeHtml(s: string): string {
+  return s
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+// === Helpers ===
+
+/**
+ * Normalize a `RequestInfo | URL` input to a URL string.
+ */
+export function resolveInputUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
+function base64URLEncode(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let string_ = '';
+  for (const byte of bytes) {
+    string_ += String.fromCodePoint(byte);
+  }
+  return btoa(string_).replaceAll('+', '-').replaceAll('/', '_').split('=')[0];
+}
+
+export function generateRandomString(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return Array.from(array, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getApiUrl(): string {
+  return process.env.BERGET_API_URL || 'https://api.berget.ai';
+}
+
+function getAuthUrl(): string {
+  return process.env.BERGET_AUTH_URL || 'https://auth.berget.ai';
+}
+
+export function getInferenceUrl(): string {
+  return process.env.BERGET_INFERENCE_URL || 'https://api.berget.ai/v1';
+}

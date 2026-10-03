@@ -14,6 +14,8 @@
   ],
   "files": [
     "index.ts",
+    "omp.ts",
+    "shared.ts",
     "package.json",
     "README.md",
     "LICENSE"
@@ -39,6 +41,12 @@
     "knip": "knip",
     "prepare": "husky"
   },
+  "knip": {
+    "entry": [
+      "index.ts",
+      "omp.ts"
+    ]
+  },
   "lint-staged": {
     "*.{ts,tsx}": [
       "eslint --fix",
@@ -51,6 +59,11 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./omp.ts"
     ]
   },
   "devDependencies": {

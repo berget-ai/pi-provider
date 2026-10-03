@@ -99,6 +99,16 @@ const result = await ctx.modelRegistry.classify(model!, {
 
 Codemode scripts use the same surface — `await models.getModelOfType('classifier', 'berget', 'laya-latest')` then `await models.classify(model, context)` (note the `await`s in codemode). `state` must be an object and the question types are the public `bool`/`choice`/`score`; toggle them via the codemode `--tools` flag. Both models are in eval state upstream and billed at €0.042/M input tokens (output free).
 
+## Oh My Pi (OMP)
+
+The package also ships an [Oh My Pi](https://omp.sh) entry point (best-effort support):
+
+```bash
+omp install @bergetai/pi-provider
+```
+
+Authentication works the same way: set `BERGET_API_KEY`, or run `/login` and select **Berget AI** to sign in with a Berget Code plan through your browser. Two Pi-only features are not available under OMP: the QR device-login flow (OMP's login callbacks have no device-code surface) and the System One classifiers (OMP has no classifier API).
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, testing, and architecture details.

@@ -11,6 +11,7 @@
     "rootDir": ".",
     "removeComments": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
@@ -23,6 +24,6 @@
     "skipLibCheck": true,
     "types": ["node", "vitest"]
   },
-  "include": ["index.ts", "test/**/*.ts"],
+  "include": ["index.ts", "omp.ts", "shared.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist", "build", "*.lock", ".husky"]
 }
