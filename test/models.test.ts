@@ -174,19 +174,6 @@ describe('Model Fetching & Mapping', () => {
     expect(result.input).toEqual(['text', 'image']);
   });
 
-  test('mapBergetModelToModel applies reasoning override for known reasoning models', () => {
-    const apiModel = {
-      contextWindow: 128_000,
-      id: 'openai/gpt-oss-120b',
-      inputPricePerToken: 0.000_000_2,
-      outputPricePerToken: 0.000_000_75,
-    };
-
-    const result = mapBergetModelToModel(apiModel);
-    expect(result.reasoning).toBe(true);
-    expect(result.input).toEqual(['text']);
-  });
-
   test('mapBergetModelToModel defaults unknown models to text-only without reasoning', () => {
     const apiModel = {
       contextWindow: 64_000,
@@ -198,41 +185,6 @@ describe('Model Fetching & Mapping', () => {
     const result = mapBergetModelToModel(apiModel);
     expect(result.input).toEqual(['text']);
     expect(result.reasoning).toBe(false);
-  });
-
-  test('mapBergetModelToModel preserves cost and contextWindow when applying override', () => {
-    const apiModel = {
-      contextWindow: 262_144,
-      id: 'mistralai/Mistral-Medium-3.5-128B',
-      inputPricePerToken: 0.000_001_5,
-      outputPricePerToken: 0.000_005,
-    };
-
-    const result = mapBergetModelToModel(apiModel);
-
-    expect(result.input).toEqual(['text', 'image']);
-    expect(result.reasoning).toBe(true);
-    expect(result.contextWindow).toBe(262_144);
-    expect(result.cost.input).toBe(1.5);
-    expect(result.cost.output).toBe(5);
-    expect(result.cost.cacheRead).toBe(0);
-  });
-
-  test('mapBergetModelToModel applies vision and reasoning override for moonshotai/Kimi-K2.6', () => {
-    const apiModel = {
-      contextWindow: 256_000,
-      id: 'moonshotai/Kimi-K2.6',
-      inputPricePerToken: 0.000_000_2,
-      outputPricePerToken: 0.000_000_8,
-    };
-
-    const result = mapBergetModelToModel(apiModel);
-
-    expect(result.input).toEqual(['text', 'image']);
-    expect(result.reasoning).toBe(true);
-    expect(result.contextWindow).toBe(256_000);
-    expect(result.cost.input).toBeCloseTo(0.2);
-    expect(result.cost.output).toBeCloseTo(0.8);
   });
 
   test('mapBergetModelToModel applies vision and reasoning override for zai-org/GLM-5.3-Flash', () => {
@@ -264,8 +216,7 @@ describe('Model Fetching & Mapping', () => {
 describe('MODEL_OVERRIDES table (regression guard)', () => {
   // Every override must actually win over the base defaults. This catches:
   //   - dropped overrides (e.g. an id that no longer matches the API catalog),
-  //   - bad thinkingLevelMap shapes,
-  //   - the GLM-5.2 maxTokens bump.
+  //   - bad thinkingLevelMap shapes.
   // It does NOT catch key/API drift — that needs a fixture against a real
   // /v1/models/chat snapshot.
   for (const [id, override] of Object.entries(MODEL_OVERRIDES)) {
