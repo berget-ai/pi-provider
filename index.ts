@@ -13,13 +13,13 @@ import {
   createProvider,
   envApiKeyAuth,
   type AuthInteraction,
+  type ClassifierFunction,
   type ClassifierModel,
   type Model,
   type OAuthAuth,
   type OAuthCredential,
 } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/compat';
-import { classify } from '@earendil-works/pi-ai/api/typesafe-system-one';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Socket } from 'node:net';
 
@@ -271,6 +271,23 @@ export function getBergetClassifierModels(): ClassifierModel<'typesafe-system-on
       type: 'classifier',
     },
   ];
+}
+
+/**
+ * Resolve pi-ai's System One `classify` transport when the host pi exposes it
+ * to extensions. Pi's extension loader only aliases a fixed set of pi-ai
+ * entry points (root, `/compat`, `/oauth`, `/providers/all`) —
+ * `api/typesafe-system-one` is not among them, so a static import would make
+ * the whole extension fail to load. A caught dynamic import degrades
+ * gracefully: `undefined` here means classifiers must not be registered.
+ */
+async function loadSystemOneClassify(): Promise<ClassifierFunction | undefined> {
+  try {
+    const { classify } = await import('@earendil-works/pi-ai/api/typesafe-system-one');
+    return classify;
+  } catch {
+    return undefined;
+  }
 }
 
 // === OAuth (Authorization Code + PKCE) ===
@@ -1216,6 +1233,11 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // resolved credential.
   const models = await fetchBergetModels();
 
+  // Classifiers register only where pi exposes the System One transport to
+  // extensions; otherwise the provider loads without them. See
+  // loadSystemOneClassify.
+  const classify = await loadSystemOneClassify();
+
   pi.registerProvider(
     createProvider({
       api: openAICompletionsApi(),
@@ -1224,14 +1246,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
         oauth: bergetOAuthAuth(),
       },
       baseUrl: getInferenceUrl(),
-      classifiers: { 'typesafe-system-one': { classify } },
+      classifiers: classify === undefined ? undefined : { 'typesafe-system-one': { classify } },
       // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
       // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
       // can restore/persist it through the store — closing the shape gap that
       // blocked persistence on the legacy `ProviderConfig` form (PR #22).
       fetchModels: () => fetchBergetModels(),
       id: 'berget',
-      models: [...models, ...getBergetClassifierModels()],
+      models: classify === undefined ? models : [...models, ...getBergetClassifierModels()],
       name: 'Berget AI',
     }),
   );
