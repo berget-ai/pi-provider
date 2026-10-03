@@ -79,26 +79,6 @@ List all available models from the command line:
 pi --list-models
 ```
 
-### Classifiers (System One)
-
-The provider also registers two [System One](https://docs.berget.ai) classifier models — `laya-latest` (multilingual) and `systemone` (Qwen3.5 2B) — that answer typed questions (`bool`, `choice`, `score`) about an application state in a single pass. They don't appear in `pi --list-models` (that lists chat models only); extensions reach them through the model registry:
-
-```ts
-const model = ctx.modelRegistry.getModelOfType('classifier', 'berget', 'laya-latest');
-const result = await ctx.modelRegistry.classify(model!, {
-  state: { ticket: 'double-charge' },
-  questions: {
-    refund: {
-      type: 'bool',
-      instructions: 'Is the customer asking for money back?',
-      criteria: { true: 'wants refund', false: 'something else' },
-    },
-  },
-});
-```
-
-Codemode scripts use the same surface — `await models.getModelOfType('classifier', 'berget', 'laya-latest')` then `await models.classify(model, context)` (note the `await`s in codemode). `state` must be an object and the question types are the public `bool`/`choice`/`score`; toggle them via the codemode `--tools` flag. Both models are in eval state upstream and billed at €0.042/M input tokens (output free).
-
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, testing, and architecture details.
