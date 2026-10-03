@@ -71,43 +71,9 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: null,
     },
   },
-  'meta-llama/Llama-3.1-8B-Instruct': {
-    reasoning: false,
-  },
-  'meta-llama/Llama-3.3-70B-Instruct': {
-    reasoning: false,
-  },
-  'mistralai/Mistral-Medium-3.5-128B': {
-    input: ['text', 'image'],
-    reasoning: true,
-    // vLLM --reasoning-parser mistral honors OpenAI-style reasoning_effort.
-    thinkingLevelMap: {
-      high: 'high',
-      low: null,
-      max: null,
-      medium: 'medium',
-      minimal: null,
-      off: 'none',
-      xhigh: null,
-    },
-  },
   'mistralai/Mistral-Small-3.2-24B-Instruct-2506': {
     input: ['text', 'image'],
     reasoning: false,
-  },
-  'moonshotai/Kimi-K2.6': {
-    input: ['text', 'image'],
-    reasoning: true,
-    // Kimi K2 thinking.type is enabled/disabled — binary, so only off/high.
-    thinkingLevelMap: {
-      high: 'high',
-      low: null,
-      max: null,
-      medium: null,
-      minimal: null,
-      off: 'none',
-      xhigh: null,
-    },
   },
   'moonshotai/Kimi-K3': {
     input: ['text', 'image'],
@@ -121,19 +87,6 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       minimal: null,
       off: 'none',
       xhigh: null,
-    },
-  },
-  'openai/gpt-oss-120b': {
-    reasoning: true,
-    // gpt-oss passes reasoning_effort through to vLLM; expose the ladder.
-    thinkingLevelMap: {
-      high: 'high',
-      low: null,
-      max: null,
-      medium: 'medium',
-      minimal: null,
-      off: 'none',
-      xhigh: 'xhigh',
     },
   },
   'Qwen/Qwen3.8-27B-FP8': {
@@ -151,19 +104,6 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: 'xhigh',
     },
   },
-  'zai-org/GLM-4.7-FP8': {
-    reasoning: true,
-    // GLM-4.7 enable_thinking is binary — only off/high.
-    thinkingLevelMap: {
-      high: 'high',
-      low: null,
-      max: null,
-      medium: null,
-      minimal: null,
-      off: 'none',
-      xhigh: null,
-    },
-  },
   'zai-org/GLM-5.3-Flash': {
     input: ['text', 'image'],
     reasoning: true,
@@ -179,20 +119,6 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       minimal: null, // clamps up to low
       off: null, // thinking cannot be disabled — level hidden from selector
       xhigh: null, // clamps up to max
-    },
-  },
-  'zai-org/GLM-5.2': {
-    maxTokens: 32_768,
-    reasoning: true,
-    // GLM-5.2 exposes a real effort knob (high/max) via chat_template_kwargs.
-    thinkingLevelMap: {
-      high: 'high',
-      low: null,
-      max: 'max',
-      medium: null,
-      minimal: null,
-      off: 'none',
-      xhigh: null,
     },
   },
 };
