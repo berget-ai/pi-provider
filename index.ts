@@ -231,46 +231,114 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
 
 // === Classifier Models ===
 
+/** Context windows for known System One classifier models, keyed by catalog id. */
+const SYSTEM_ONE_CONTEXT_WINDOWS: Record<string, number> = {
+  'convaiinnovations/laya': 8192,
+  'Qwen/Qwen3.5-2B': 262_144,
+};
+
 /**
- * Static System One classifier models.
- *
- * @remarks `/v1/models/chat` does not list System One models, so these entries
- *          are static and kept out of {@link fetchBergetModels}. createProvider
- *          merges baseline models with the fetch overlay by type + id, so the
- *          classifiers survive refreshes and stay out of chat model listings.
- *          Context windows come from the inference-api model config
- *          (`src/models/config.ts`); both models are Eval/preview lifecycle
- *          there — if either is retired upstream, these entries go stale
- *          silently. Ids are catalog aliases: the wire payload sends `id` as
- *          the request `model`, and the server resolves aliases per request.
+ * Fallback context window for system-one models missing from
+ * {@link SYSTEM_ONE_CONTEXT_WINDOWS}. Conservative on purpose: an understated
+ * window only hides older turns, an overstated one sends requests that fail at
+ * the inference API.
  */
-export function getBergetClassifierModels(): ClassifierModel<'typesafe-system-one'>[] {
-  // Billed at €0.042/M input tokens; output is free.
-  const cost = { cacheRead: 0, cacheWrite: 0, input: 0.042, output: 0 };
-  return [
-    {
-      api: 'typesafe-system-one',
-      baseUrl: getInferenceUrl(),
-      contextWindow: 8192,
-      cost,
-      id: 'laya-latest',
-      input: ['text'],
-      name: 'System One (Laya multilingual)',
-      provider: 'berget',
-      type: 'classifier',
-    },
-    {
-      api: 'typesafe-system-one',
-      baseUrl: getInferenceUrl(),
-      contextWindow: 262_144,
-      cost,
-      id: 'systemone',
-      input: ['text'],
-      name: 'System One (Qwen3.5 2B)',
-      provider: 'berget',
-      type: 'classifier',
-    },
+const DEFAULT_SYSTEM_ONE_CONTEXT_WINDOW = 8192;
+
+/** Lifecycle values that mean a model is not usable */
+const RETIRED_LIFECYCLE = new Set(['archived', 'deprecated', 'disabled', 'retired']);
+
+/** A validated `model_type: "system-one"` entry from the model catalog. */
+interface SystemOneCatalogEntry {
+  id: string;
+  inputPricePerMillion: number;
+  name: string;
+  outputPricePerMillion: number;
+}
+
+/**
+ * Fetch the System One classifier models from the Berget model catalog and map
+ * each entry to a pi-ai `ClassifierModel<'typesafe-system-one'>`.
+ *
+ * @remarks - `GET /v1/models` against {@link getApiUrl}; only entries with
+ *          `model_type: "system-one"` are kept, and entries whose lifecycle
+ *          marks them retired/deprecated/disabled/archived are dropped. Ids
+ *          are catalog ids (e.g. `Qwen/Qwen3.5-2B`): the wire payload sends
+ *          `id` as the request `model`, and the server resolves full catalog
+ *          ids per request. Context windows are not part of the catalog
+ *          response, so they come from {@link SYSTEM_ONE_CONTEXT_WINDOWS},
+ *          falling back to {@link DEFAULT_SYSTEM_ONE_CONTEXT_WINDOW}. Catalog
+ *          prices (€/M tokens) pass through unchanged — pi-ai cost fields are
+ *          also per million tokens. Missing numeric fields coerce to 0 rather
+ *          than dropping the model — a bad value must not block the user from
+ *          having a classifier.
+ * @throws `Failed to fetch classifiers: <status> <statusText>` on non-2xx,
+ *         `Malformed model catalog response: ...` when the body isn't an
+ *         OpenAI-style `{ object: 'list', data: [...] }`.
+ */
+export async function fetchBergetClassifiers(): Promise<ClassifierModel<'typesafe-system-one'>[]> {
+  const apiUrl = getApiUrl();
+  const response = await fetch(`${apiUrl}/v1/models`);
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch classifiers: ${String(response.status)} ${response.statusText}`,
+    );
+  }
+  const data: unknown = await response.json();
+  if (!data || typeof data !== 'object' || !Array.isArray((data as Record<string, unknown>).data)) {
+    throw new Error("Malformed model catalog response: expected { object: 'list', data: [...] }");
+  }
+  const raw = (data as Record<string, unknown>).data as unknown[];
+  return raw
+    .map((entry) => coerceSystemOneEntry(entry))
+    .filter((entry): entry is SystemOneCatalogEntry => entry !== null)
+    .map((entry) => mapSystemOneToClassifier(entry));
+}
+
+/** Returns a usable catalog entry, or null when unusable or retired. */
+function coerceSystemOneEntry(entry: unknown): SystemOneCatalogEntry | null {
+  if (typeof entry !== 'object' || entry === null) return null;
+  const record = entry as Record<string, unknown>;
+  if (record.model_type !== 'system-one') return null;
+  const id = typeof record.id === 'string' ? record.id : '';
+  if (!id) return null;
+  const lifecycle = [
+    typeof record.lifecycle_state === 'string' ? record.lifecycle_state.toLowerCase() : '',
+    typeof record.lifecycle_status === 'string' ? record.lifecycle_status.toLowerCase() : '',
   ];
+  if (lifecycle.some((state) => RETIRED_LIFECYCLE.has(state))) return null;
+  const pricing =
+    typeof record.pricing === 'object' && record.pricing !== null
+      ? (record.pricing as Record<string, unknown>)
+      : {};
+  return {
+    id,
+    inputPricePerMillion: typeof pricing.input === 'number' ? pricing.input : 0,
+    name: typeof record.name === 'string' && record.name ? record.name : id,
+    outputPricePerMillion: typeof pricing.output === 'number' ? pricing.output : 0,
+  };
+}
+
+function mapSystemOneToClassifier(
+  entry: SystemOneCatalogEntry,
+): ClassifierModel<'typesafe-system-one'> {
+  return {
+    api: 'typesafe-system-one',
+    baseUrl: getInferenceUrl(),
+    contextWindow: SYSTEM_ONE_CONTEXT_WINDOWS[entry.id] ?? DEFAULT_SYSTEM_ONE_CONTEXT_WINDOW,
+    cost: {
+      cacheRead: 0,
+      cacheWrite: 0,
+      // pi-ai cost fields are per million tokens — same unit as the catalog.
+      input: entry.inputPricePerMillion,
+      output: entry.outputPricePerMillion,
+    },
+    id: entry.id,
+    input: ['text'],
+    name: `System One (${entry.name})`,
+    provider: 'berget',
+    type: 'classifier',
+  };
 }
 
 /**
@@ -1233,10 +1301,18 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   // resolved credential.
   const models = await fetchBergetModels();
 
-  // Classifiers register only where pi exposes the System One transport to
-  // extensions; otherwise the provider loads without them. See
-  // loadSystemOneClassify.
+  // Classifiers only come from the live catalog. When pi does not expose the
+  // System One transport (loadSystemOneClassify), or the catalog fetch fails,
+  // the provider loads without classifiers — chat models are unaffected.
   const classify = await loadSystemOneClassify();
+  let classifiers: ClassifierModel<'typesafe-system-one'>[] = [];
+  if (classify !== undefined) {
+    try {
+      classifiers = await fetchBergetClassifiers();
+    } catch {
+      classifiers = [];
+    }
+  }
 
   pi.registerProvider(
     createProvider({
@@ -1250,10 +1326,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
       // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
       // can restore/persist it through the store — closing the shape gap that
-      // blocked persistence on the legacy `ProviderConfig` form (PR #22).
+      // blocked persistence on the legacy `ProviderConfig` form (PR #22). The
+      // classifier entries passed here as baseline are merged by type + id, so
+      // they survive refreshes and stay out of chat model listings.
       fetchModels: () => fetchBergetModels(),
       id: 'berget',
-      models: classify === undefined ? models : [...models, ...getBergetClassifierModels()],
+      models: [...models, ...classifiers],
       name: 'Berget AI',
     }),
   );
