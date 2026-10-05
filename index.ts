@@ -1320,13 +1320,19 @@ export default async function (pi: ExtensionAPI): Promise<void> {
       },
       baseUrl: getInferenceUrl(),
       classifiers: classify === undefined ? undefined : { 'typesafe-system-one': { classify } },
-      // `fetchModels` is the `ModelsStore`-persisted refresh path. Because it
-      // returns pi-ai `Model<'openai-completions'>[]` directly, `createProvider`
-      // can restore/persist it through the store — closing the shape gap that
-      // blocked persistence on the legacy `ProviderConfig` form (PR #22). The
-      // classifier entries passed here as baseline are merged by type + id, so
-      // they survive refreshes and stay out of chat model listings.
-      fetchModels: () => fetchBergetModels(),
+      // `fetchModels` is the `ModelsStore`-persisted refresh path. It returns
+      // every model type (chat + classifiers, all pi-ai `ProviderModel`s), so
+      // `createProvider` persists and statically restores the whole overlay and
+      // merges it over the startup baseline by type + id. Classifiers therefore
+      // refresh wherever pi calls `refreshModels` (e.g. the model selector), not
+      // only at startup. A failing classifier fetch must not block the chat
+      // refresh, so it degrades to chat-only instead of throwing.
+      fetchModels: async () => {
+        const chat = await fetchBergetModels();
+        const classifiers =
+          classify === undefined ? [] : await fetchBergetClassifiers().catch(() => []);
+        return [...chat, ...classifiers];
+      },
       id: 'berget',
       models: [...models, ...classifiers],
       name: 'Berget AI',

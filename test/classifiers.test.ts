@@ -385,7 +385,9 @@ describe('Classifier registration', () => {
   test('classifiers survive a refreshModels overlay cycle', async () => {
     const provider = await registerProvider();
 
-    // Swap the upstream chat catalog, as the live refresh path would.
+    // Swap both upstream catalogs to a chat-shaped body for every URL. The
+    // classifier fetch inside fetchModels then fails (malformed) and must
+    // degrade to chat-only without aborting the chat refresh.
     globalThis.fetch = (): Promise<Response> =>
       Promise.resolve(
         Response.json(
@@ -440,9 +442,48 @@ describe('Classifier registration', () => {
         .toSorted((a, b) => a.localeCompare(b)),
     ).toEqual(['Cloudflare/clef-flash', 'convaiinnovations/laya', 'Qwen/Qwen3.5-2B']);
 
-    // The persisted overlay is chat-only — classifiers are not duplicated into it.
+    // The degraded classifier fetch persisted a chat-only overlay — no classifier
+    // entries are duplicated into it.
     const written = storeWroteModels as { models: { type?: string }[] };
     expect(written.models.every((model) => model.type === undefined)).toBe(true);
+  });
+
+  test('refreshModels fetches and persists classifiers alongside chat models', async () => {
+    const provider = await registerProvider();
+
+    // Restore the full chat + catalog mock so fetchModels sees both endpoints.
+    installCatalogFetch();
+
+    let storeWroteModels: unknown = null;
+    await provider.refreshModels!({
+      allowNetwork: true,
+      signal: new AbortController().signal,
+      publish: (publication: { update?: () => void; persist?: unknown }) => {
+        publication.update?.();
+        if (publication.persist) {
+          storeWroteModels = publication.persist;
+        }
+        return Promise.resolve(true);
+      },
+      store: {
+        read: () => Promise.resolve() as Promise<ModelsStoreEntry | undefined>,
+        write: (entry: ModelsStoreEntry) => {
+          storeWroteModels = entry;
+          return Promise.resolve();
+        },
+        delete: () => Promise.resolve(),
+      },
+    } as Parameters<NonNullable<Provider['refreshModels']>>[0]);
+
+    // The persisted overlay includes the classifier models fetched from the
+    // live catalog — they refresh wherever pi calls refreshModels.
+    const written = storeWroteModels as { models: { id?: string; type?: string }[] };
+    expect(
+      written.models
+        .map((model) => (model.type === 'classifier' ? model.id : undefined))
+        .filter((id): id is string => id !== undefined)
+        .toSorted((a, b) => a.localeCompare(b)),
+    ).toEqual(['Cloudflare/clef-flash', 'convaiinnovations/laya', 'Qwen/Qwen3.5-2B']);
   });
 });
 
