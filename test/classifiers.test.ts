@@ -265,17 +265,17 @@ describe('Classifier model mapping', () => {
       cost: { cacheRead: 0, cacheWrite: 0, input: 0.042, output: 0 },
       id: 'Qwen/Qwen3.5-2B',
       input: ['text'],
-      name: 'System One (Qwen3.5-2B)',
+      name: 'Qwen/Qwen3.5-2B',
       provider: 'berget',
       type: 'classifier',
     });
 
     const laya = models.find((model) => model.id === 'convaiinnovations/laya');
-    expect(laya).toMatchObject({ contextWindow: 8192, name: 'System One (laya)' });
+    expect(laya).toMatchObject({ contextWindow: 8192, name: 'convaiinnovations/laya' });
 
     // Clef is a known id — its documented 64K window wins over the default.
     const clef = models.find((model) => model.id === 'Cloudflare/clef-flash');
-    expect(clef).toMatchObject({ contextWindow: 65_536, name: 'System One (clef-flash)' });
+    expect(clef).toMatchObject({ contextWindow: 65_536, name: 'Cloudflare/clef-flash' });
   });
 
   test('baseUrl follows BERGET_INFERENCE_URL like chat models do', async () => {

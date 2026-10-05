@@ -255,7 +255,6 @@ const RETIRED_LIFECYCLE = new Set(['archived', 'deprecated', 'disabled', 'retire
 interface SystemOneCatalogEntry {
   id: string;
   inputPricePerMillion: number;
-  name: string;
   outputPricePerMillion: number;
 }
 
@@ -317,7 +316,6 @@ function coerceSystemOneEntry(entry: unknown): SystemOneCatalogEntry | null {
   return {
     id,
     inputPricePerMillion: typeof pricing.input === 'number' ? pricing.input : 0,
-    name: typeof record.name === 'string' && record.name ? record.name : id,
     outputPricePerMillion: typeof pricing.output === 'number' ? pricing.output : 0,
   };
 }
@@ -338,7 +336,9 @@ function mapSystemOneToClassifier(
     },
     id: entry.id,
     input: ['text'],
-    name: `System One (${entry.name})`,
+    // Display name is the catalog id (e.g. `Qwen/Qwen3.5-2B`) — unambiguous in
+    // Pi's model list without inventing marketing names for upstream models.
+    name: entry.id,
     provider: 'berget',
     type: 'classifier',
   };
