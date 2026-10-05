@@ -233,6 +233,9 @@ function coerceBergetModel(entry: unknown): BergetModel | null {
 
 /** Context windows for known System One classifier models, keyed by catalog id. */
 const SYSTEM_ONE_CONTEXT_WINDOWS: Record<string, number> = {
+  // Cloudflare documents a 64K context for the Clef decision models
+  // (blog.cloudflare.com/clef-decision-models).
+  'Cloudflare/clef-flash': 65_536,
   'convaiinnovations/laya': 8192,
   'Qwen/Qwen3.5-2B': 262_144,
 };

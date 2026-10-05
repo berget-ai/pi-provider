@@ -273,9 +273,9 @@ describe('Classifier model mapping', () => {
     const laya = models.find((model) => model.id === 'convaiinnovations/laya');
     expect(laya).toMatchObject({ contextWindow: 8192, name: 'System One (laya)' });
 
-    // Unknown id falls back to the conservative default window.
+    // Clef is a known id — its documented 64K window wins over the default.
     const clef = models.find((model) => model.id === 'Cloudflare/clef-flash');
-    expect(clef).toMatchObject({ contextWindow: 8192, name: 'System One (clef-flash)' });
+    expect(clef).toMatchObject({ contextWindow: 65_536, name: 'System One (clef-flash)' });
   });
 
   test('baseUrl follows BERGET_INFERENCE_URL like chat models do', async () => {
@@ -285,6 +285,19 @@ describe('Classifier model mapping', () => {
     for (const model of models) {
       expect(model.baseUrl).toBe('https://test-inference.berget.ai');
     }
+  });
+
+  test('unknown system-one ids fall back to the default context window', async () => {
+    globalThis.fetch = (): Promise<Response> =>
+      Promise.resolve(
+        Response.json(
+          { data: [systemOneEntry({ id: 'example/new-classifier' })], object: 'list' },
+          { headers: { 'Content-Type': 'application/json' }, status: 200 },
+        ),
+      );
+    const models = await fetchBergetClassifiers();
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({ contextWindow: 8192, id: 'example/new-classifier' });
   });
 
   test('throws on a non-2xx catalog response', async () => {
