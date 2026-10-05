@@ -4,7 +4,7 @@
  * Coverage:
  *
  * 1. `fetchBergetClassifiers()` mapping: catalog fetch + `system-one` filter,
- *    lifecycle filtering, ids, €/M pricing, context windows, and the
+ *    type filtering, ids, €/M pricing, context windows, and the
  *    `BERGET_INFERENCE_URL` override.
  * 2. Registration: fetched classifiers are exposed via `getAllModels()`,
  *    kept out of chat-only `getModels()`, and survive a `refreshModels`
@@ -84,8 +84,6 @@ const CATALOG_FIXTURE = {
       name: 'clef-flash',
       pricing: { input: 0.042, output: 0 },
     }),
-    // Retired lifecycle — must be dropped.
-    systemOneEntry({ id: 'old/system-one-model', lifecycle_state: 'retired' }),
   ],
   object: 'list',
 };
@@ -246,7 +244,7 @@ describe('Classifier model mapping', () => {
     expect(captured.map((request) => request.url)).toEqual([
       'https://test-api.berget.ai/v1/models',
     ]);
-    // Decoy model types and the retired entry are gone; the rest survive.
+    // Decoy model types are gone; system-one entries survive.
     expect(models.map((model) => model.id).toSorted((a, b) => a.localeCompare(b))).toEqual([
       'Cloudflare/clef-flash',
       'convaiinnovations/laya',

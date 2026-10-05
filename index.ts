@@ -248,9 +248,6 @@ const SYSTEM_ONE_CONTEXT_WINDOWS: Record<string, number> = {
  */
 const DEFAULT_SYSTEM_ONE_CONTEXT_WINDOW = 8192;
 
-/** Lifecycle values that mean a model is not usable */
-const RETIRED_LIFECYCLE = new Set(['archived', 'deprecated', 'disabled', 'retired']);
-
 /** A validated `model_type: "system-one"` entry from the model catalog. */
 interface SystemOneCatalogEntry {
   id: string;
@@ -263,8 +260,10 @@ interface SystemOneCatalogEntry {
  * each entry to a pi-ai `ClassifierModel<'typesafe-system-one'>`.
  *
  * @remarks - `GET /v1/models` against {@link getApiUrl}; only entries with
- *          `model_type: "system-one"` are kept, and entries whose lifecycle
- *          marks them retired/deprecated/disabled/archived are dropped. Ids
+ *          `model_type: "system-one"` are kept. No lifecycle filtering on the
+ *          client: the catalog never lists retired or hidden models (the
+ *          inference API's `isPublicModel` rule), and deprecated models are
+ *          intentionally still served until their end-of-life date. Ids
  *          are catalog ids (e.g. `Qwen/Qwen3.5-2B`): the wire payload sends
  *          `id` as the request `model`, and the server resolves full catalog
  *          ids per request. Context windows are not part of the catalog
@@ -297,18 +296,13 @@ export async function fetchBergetClassifiers(): Promise<ClassifierModel<'typesaf
     .map((entry) => mapSystemOneToClassifier(entry));
 }
 
-/** Returns a usable catalog entry, or null when unusable or retired. */
+/** Returns a validated catalog entry, or null when the entry isn't usable. */
 function coerceSystemOneEntry(entry: unknown): SystemOneCatalogEntry | null {
   if (typeof entry !== 'object' || entry === null) return null;
   const record = entry as Record<string, unknown>;
   if (record.model_type !== 'system-one') return null;
   const id = typeof record.id === 'string' ? record.id : '';
   if (!id) return null;
-  const lifecycle = [
-    typeof record.lifecycle_state === 'string' ? record.lifecycle_state.toLowerCase() : '',
-    typeof record.lifecycle_status === 'string' ? record.lifecycle_status.toLowerCase() : '',
-  ];
-  if (lifecycle.some((state) => RETIRED_LIFECYCLE.has(state))) return null;
   const pricing =
     typeof record.pricing === 'object' && record.pricing !== null
       ? (record.pricing as Record<string, unknown>)
