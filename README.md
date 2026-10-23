@@ -2,6 +2,17 @@
 
 Run [Berget AI](https://berget.ai) models inside [Pi](https://pi.dev).
 
+## Quick Start
+
+The recommended way to get started is with the [Berget CLI](https://www.npmjs.com/package/berget):
+
+```bash
+npx berget code init   # choose Pi — installs this provider and sets it as default
+pi
+# Type /login → "Use a subscription" → "Berget AI" (seat)
+# or paste an API key
+```
+
 ## Prerequisites
 
 - [Pi](https://pi.dev) v0.81.x or later
