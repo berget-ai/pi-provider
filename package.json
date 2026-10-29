@@ -58,10 +58,10 @@
     "@earendil-works/pi-coding-agent": "^1.4.0",
     "@types/node": "^26.6.5",
     "@types/qrcode": "^1.5.6",
-    "@vitest/eslint-plugin": "^1.6.27",
-    "eslint": "^10.11.0",
+    "@vitest/eslint-plugin": "^1.6.28",
+    "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-prettier": "^5.5.7",
     "eslint-plugin-promise": "^7.3.0",
     "eslint-plugin-sonarjs": "^4.2.2",
     "eslint-plugin-tsdoc": "^0.5.4",
@@ -70,7 +70,7 @@
     "lint-staged": "^17.6.0",
     "prettier": "^3.9.10",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.71.0",
+    "typescript-eslint": "^8.72.0",
     "vitest": "^3.0.0"
   },
   "peerDependencies": {
