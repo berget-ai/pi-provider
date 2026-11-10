@@ -187,6 +187,32 @@ describe('Model Fetching & Mapping', () => {
     expect(result.reasoning).toBe(false);
   });
 
+  test('mapBergetModelToModel applies vision and reasoning override for moonshotai/Kimi-K3.1-Pro', () => {
+    const apiModel = {
+      contextWindow: 327_680,
+      id: 'moonshotai/Kimi-K3.1-Pro',
+      inputPricePerToken: 0.000_003,
+      outputPricePerToken: 0.000_01,
+    };
+
+    const result = mapBergetModelToModel(apiModel);
+
+    expect(result.input).toEqual(['text', 'image']);
+    expect(result.reasoning).toBe(true);
+    // The model card documents low/high/max only; no off level is exposed.
+    expect(result.thinkingLevelMap).toEqual({
+      high: 'high',
+      low: 'low',
+      max: 'max',
+      medium: null,
+      minimal: null,
+      off: null,
+      xhigh: null,
+    });
+    expect(result.contextWindow).toBe(327_680);
+    expect(result.maxTokens).toBe(32_768);
+  });
+
   test('mapBergetModelToModel applies vision and reasoning override for zai-org/GLM-5.3-Flash', () => {
     const apiModel = {
       contextWindow: 327_680,
