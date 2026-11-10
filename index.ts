@@ -89,6 +89,21 @@ export const MODEL_OVERRIDES: Record<string, Partial<Model<'openai-completions'>
       xhigh: null,
     },
   },
+  'moonshotai/Kimi-K3.1-Pro': {
+    input: ['text', 'image'],
+    reasoning: true,
+    // Kimi K3.1 Pro supports reasoning_effort low/high/max (default max);
+    // no off level is documented. Holes collapse to the nearest supported level.
+    thinkingLevelMap: {
+      high: 'high',
+      low: 'low',
+      max: 'max',
+      medium: null,
+      minimal: null,
+      off: null,
+      xhigh: null,
+    },
+  },
   'Qwen/Qwen3.8-27B-FP8': {
     input: ['text', 'image'],
     reasoning: true,
